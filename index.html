@@ -1207,8 +1207,9 @@
         }
       }
 
+      // The ticked rubber-band edge follows the cursor from the first point on.
       if (wasHovering !== !!state.hoveredHandle ||
-          state.currentPoints.length === 3 || state.copyingQuad) {
+          state.currentPoints.length > 0 || state.copyingQuad) {
         requestAnimationFrame(render);
       }
     });
@@ -1518,17 +1519,24 @@
           ctx.lineTo(state.currentPoints[0].x, state.currentPoints[0].y);
           ctx.stroke();
 
+          // Closing edge back to P1. The other rubber-band edge is the ticked one
+          // drawn below.
           ctx.setLineDash([4 / state.scale, 4 / state.scale]);
           ctx.strokeStyle = '#ffffff';
           ctx.beginPath();
-          ctx.moveTo(state.currentPoints[2].x, state.currentPoints[2].y);
-          ctx.lineTo(state.mouseImgPos.x, state.mouseImgPos.y);
+          ctx.moveTo(state.mouseImgPos.x, state.mouseImgPos.y);
           ctx.lineTo(state.currentPoints[0].x, state.currentPoints[0].y);
           ctx.stroke();
           ctx.setLineDash([]);
 
           const previewPts = sortQuadPoints([...state.currentPoints, state.mouseImgPos]);
           drawQuadrilateralAndGrid({ points: previewPts }, 'rgba(255, 255, 255, 0.55)', 0.6);
+        }
+
+        // Drawn last so the ticks stay readable over the preview grid.
+        if (state.currentPoints.length < 4) {
+          drawTickedLine(state.currentPoints[state.currentPoints.length - 1],
+                         state.mouseImgPos);
         }
       }
 
@@ -1541,6 +1549,45 @@
 
         const previewPts = sortQuadPoints(offsetPts);
         drawQuadrilateralAndGrid({ points: previewPts }, 'rgba(255, 255, 255, 0.8)', 0.9);
+      }
+
+      ctx.restore();
+    }
+
+    // Rubber-band edge from the last placed point to the cursor, ticked into the
+    // same 16 divisions the quad will be sampled at, so an edge can be lined up
+    // with block boundaries while it is still being drawn. Every 4th tick is
+    // longer, which keeps the quarters countable when 16 marks get dense.
+    function drawTickedLine(from, to, divisions = 16) {
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const len = Math.hypot(dx, dy);
+
+      ctx.save();
+      ctx.strokeStyle = '#ffffff';
+
+      ctx.lineWidth = 1.5 / state.scale;
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+
+      // Below a pixel or so the ticks would all land on the same spot.
+      if (len > 1e-6) {
+        const nx = -dy / len;   // unit normal, for ticks drawn across the line
+        const ny = dx / len;
+
+        ctx.lineWidth = 1 / state.scale;
+        ctx.beginPath();
+        for (let i = 1; i < divisions; i++) {
+          const t = i / divisions;
+          const px = from.x + dx * t;
+          const py = from.y + dy * t;
+          const h = (i % 4 === 0 ? 7 : 4) / state.scale;
+          ctx.moveTo(px - nx * h, py - ny * h);
+          ctx.lineTo(px + nx * h, py + ny * h);
+        }
+        ctx.stroke();
       }
 
       ctx.restore();
