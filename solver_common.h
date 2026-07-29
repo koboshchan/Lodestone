@@ -3,8 +3,8 @@
 // Deliberately free of Metal and CUDA types so both toolchains can compile it.
 // Anything platform-specific (pipeline creation, dispatch, memory) stays in the
 // per-backend file; what lives here is the formation format, the search bounds
-// contract, and the differential-verification case list, so the two backends
-// cannot drift apart on any of them.
+// contract, and the shared constants, so the two backends cannot drift apart on
+// any of them.
 #pragma once
 
 #include <algorithm>
@@ -41,15 +41,6 @@ struct MatchResult {
     int y;
     int z;
 };
-
-inline bool operator<(const MatchResult& a, const MatchResult& b) {
-    if (a.x != b.x) return a.x < b.x;
-    if (a.y != b.y) return a.y < b.y;
-    return a.z < b.z;
-}
-inline bool operator==(const MatchResult& a, const MatchResult& b) {
-    return a.x == b.x && a.y == b.y && a.z == b.z;
-}
 
 // Vanilla coordinate hash constants.
 static const int32_t kMulX = 3129871;
@@ -117,8 +108,8 @@ inline void orderByRejectionPower(std::vector<RotationInfo>& f) {
                           [](const RotationInfo& b) { return b.is_side == 0; });
 }
 
-// The optimized kernel folds (z + b.z) into pz + b.z*kMulZ, which differs from
-// the reference only if (z + b.z) overflows int32. Reject those bounds.
+// The kernel folds (z + b.z) into pz + b.z*kMulZ, which agrees with the vanilla
+// hash unless (z + b.z) overflows int32. Reject those bounds.
 inline bool validateBounds(const Uniforms& u, const std::vector<RotationInfo>& f) {
     if (u.x_min > u.x_max || u.y_min > u.y_max || u.z_min > u.z_max) {
         std::cerr << "Empty search range." << std::endl;
@@ -138,124 +129,4 @@ inline bool validateBounds(const Uniforms& u, const std::vector<RotationInfo>& f
         return false;
     }
     return true;
-}
-
-// ---------------------------------------------------------------------------
-// Differential verification: shared case list and reporting
-// ---------------------------------------------------------------------------
-struct VerifyCase {
-    const char* name;
-    std::vector<RotationInfo> formation;
-    Uniforms bounds;
-};
-
-// 4.2M entries, 50 MB. Cases are sized so neither kernel overflows this.
-static const int kVerifyMaxResults = 1 << 22;
-
-// 1- and 2-block formations match ~25% and ~6% of all coordinates, so these
-// compare the hash at effectively every point in the box. A rare 20-block
-// formation on its own would only ever prove empty == empty.
-inline std::vector<VerifyCase> makeVerifyCases() {
-    std::vector<RotationInfo> one   = {{0, 0, 0, 0, 0}};
-    std::vector<RotationInfo> two   = {{0, 0, 0, 2, 0}, {1, 0, 0, 3, 0}};
-    std::vector<RotationInfo> side  = {{0, 0, 0, 1, 1}};                  // mod 2 path
-    std::vector<RotationInfo> vert  = {{0, 3, 0, 1, 0}, {0, -2, 1, 2, 0}}; // b.y != 0
-
-    // Eight copies of one block all test the identical condition, so the match
-    // rate stays at 25% while the full 8-deep unrolled chain runs -- including
-    // blocks 4..7, which take the inline-recompute path rather than registers.
-    std::vector<RotationInfo> deep(8, RotationInfo{0, 0, 0, 0, 0});
-
-    // Five distinct blocks: exercises the inline path with a real nonzero offset.
-    std::vector<RotationInfo> five = {{0, 0, 0, 1, 0}, {1, 0, 0, 2, 0}, {0, 0, 1, 3, 0},
-                                      {2, 1, 0, 0, 0}, {-1, 0, -2, 1, 0}};
-
-    std::vector<RotationInfo> real = loadFormation();
-
-    std::vector<VerifyCase> cases = {
-        {"1 block, aligned y",        one,  {-64,  63,   0, 255, -64,  63, 0}},
-        {"1 block, straddles origin", one,  {-96,  31, -20,  90, -37,  58, 0}},
-        {"1 block, negative y",       one,  {-64,  63, -300, -1, -64,  63, 0}},
-        {"1 block, spans segment",    one,  {-64,  63,   -3, 300, -64, 63, 0}},
-        {"1 block, sub-segment y",    one,  {-128, 127,  70,  72, -128, 127, 0}},
-        {"1 block, single y",         one,  {-128, 127,  64,  64, -128, 127, 0}},
-        {"2 blocks",                  two,  {-256, 255,  -5, 260, -128, 127, 0}},
-        {"is_side (mod 2)",           side, {-64,   63,   0, 255,  -64,  63, 0}},
-        {"vertical offsets",          vert, {-128, 127,  -9, 300, -128, 127, 0}},
-        {"8 blocks (deep chain)",     deep, {-64,   63,   0, 255,  -64,  63, 0}},
-        {"5 blocks (inline path)",    five, {-512, 511,  -7, 260, -512, 511, 0}},
-        {"formation.txt",             real, {-4200, -3900, 0, 290, -1700, -1300, 0}},
-    };
-    for (auto& c : cases) c.bounds.num_blocks = (int)c.formation.size();
-    return cases;
-}
-
-struct VerifyTally {
-    int failures = 0;
-    int vacuous = 0;
-};
-
-// Sorts both result sets, compares them, prints the verdict, and updates the tally.
-// Returns true if the case agreed.
-inline bool reportVerifyCase(const char* name,
-                             std::vector<MatchResult>& refOut, int64_t refCount,
-                             std::vector<MatchResult>& optOut, int64_t optCount,
-                             double refSecs, double optSecs,
-                             int maxResults, VerifyTally& tally) {
-    std::sort(refOut.begin(), refOut.end());
-    std::sort(optOut.begin(), optOut.end());
-
-    bool overflow = refCount > maxResults || optCount > maxResults;
-    bool ok = !overflow && refCount == optCount && refOut == optOut;
-
-    // Zero matches on both kernels agrees trivially and proves nothing; say so
-    // rather than reporting a pass that carries no information.
-    const char* verdict = !ok ? "  FAIL  " : (refCount == 0 ? "  VOID  " : "  PASS  ");
-    if (ok && refCount == 0) tally.vacuous++;
-
-    std::cout << verdict << name << "  (" << refCount << " matches";
-    if (refSecs > 0 && optSecs > 0) std::cout << ", " << (refSecs / optSecs) << "x";
-    std::cout << ")" << std::endl;
-
-    if (!ok) {
-        tally.failures++;
-        if (overflow) {
-            std::cout << "        result buffer overflowed (" << refCount << " vs cap "
-                      << maxResults << "); shrink the case box" << std::endl;
-        } else if (refCount != optCount) {
-            std::cout << "        count mismatch: reference " << refCount
-                      << ", optimized " << optCount << std::endl;
-        }
-        size_t shown = 0;
-        for (size_t i = 0; i < std::max(refOut.size(), optOut.size()) && shown < 5; i++) {
-            bool differ = i >= refOut.size() || i >= optOut.size() ||
-                          !(refOut[i] == optOut[i]);
-            if (!differ) continue;
-            std::cout << "        [" << i << "] ref=";
-            if (i < refOut.size())
-                std::cout << refOut[i].x << "," << refOut[i].y << "," << refOut[i].z;
-            else std::cout << "-";
-            std::cout << "  opt=";
-            if (i < optOut.size())
-                std::cout << optOut[i].x << "," << optOut[i].y << "," << optOut[i].z;
-            else std::cout << "-";
-            std::cout << std::endl;
-            shown++;
-        }
-    }
-    return ok;
-}
-
-inline int reportVerifySummary(const VerifyTally& tally) {
-    std::cout << std::endl;
-    if (tally.failures == 0) {
-        std::cout << "All verification cases passed." << std::endl;
-    } else {
-        std::cout << tally.failures << " case(s) FAILED." << std::endl;
-    }
-    if (tally.vacuous > 0) {
-        std::cout << tally.vacuous << " case(s) marked VOID: both kernels found nothing, "
-                     "so they agree only trivially." << std::endl;
-    }
-    return tally.failures == 0 ? 0 : 1;
 }

@@ -7,102 +7,11 @@
 #include "solver_common.h"
 
 // ---------------------------------------------------------------------------
-// Reference kernel: the original implementation, preserved for differential
-// testing. The only change from the original is that the results-buffer capacity
-// is a #define instead of the literal 100, so --verify can capture large match
-// sets. The arithmetic is untouched.
-// ---------------------------------------------------------------------------
-static const char* kReferenceShaderSrc = R"(
-#include <metal_stdlib>
-using namespace metal;
-
-struct RotationInfo {
-    int x;
-    int y;
-    int z;
-    int rotation;
-    int is_side;
-};
-
-struct Uniforms {
-    int x_min;
-    int x_max;
-    int y_min;
-    int y_max;
-    int z_min;
-    int z_max;
-    int num_blocks;
-};
-
-struct MatchResult {
-    int x;
-    int y;
-    int z;
-};
-
-inline int get_texture_fast(long part_xz, int x, int y, int z, int mod_val) {
-    long l = part_xz ^ (long)y;
-    l = l * l * 42317861L + l * 11L;
-    long seed = (l >> 16) ^ 0x5DEECE66DL;
-    seed = (seed * 0x5DEECE66DL + 11L) & ((1L << 48) - 1L);
-    int next = (int)(seed >> 17);
-    int res = next >> 29;
-    int rem = res % mod_val;
-    return rem < 0 ? rem + mod_val : rem;
-}
-
-kernel void search_textures(
-    constant RotationInfo* blocks [[buffer(0)]],
-    constant Uniforms& uniforms [[buffer(1)]],
-    device atomic_int* result_count [[buffer(2)]],
-    device MatchResult* results [[buffer(3)]],
-    uint2 thread_position_in_grid [[thread_position_in_grid]]
-) {
-    int x = uniforms.x_min + (int)thread_position_in_grid.x;
-    int z = uniforms.z_min + (int)thread_position_in_grid.y;
-
-    if (x > uniforms.x_max || z > uniforms.z_max) {
-        return;
-    }
-
-    int num_blocks = uniforms.num_blocks;
-
-    RotationInfo b0 = blocks[0];
-    int mod0 = b0.is_side ? 2 : 4;
-
-    for (int y = uniforms.y_min; y <= uniforms.y_max; y++) {
-        long l0 = (long)((x + b0.x) * 3129871) ^ ((long)(z + b0.z) * 116129781L);
-        if (b0.rotation != get_texture_fast(l0, x + b0.x, y + b0.y, z + b0.z, mod0)) {
-            continue;
-        }
-
-        bool match = true;
-        for (int i = 1; i < num_blocks; i++) {
-            RotationInfo b = blocks[i];
-            int mod_val = b.is_side ? 2 : 4;
-            long l_b = (long)((x + b.x) * 3129871) ^ ((long)(z + b.z) * 116129781L);
-            if (b.rotation != get_texture_fast(l_b, x + b.x, y + b.y, z + b.z, mod_val)) {
-                match = false;
-                break;
-            }
-        }
-
-        if (match) {
-            int idx = atomic_fetch_add_explicit(result_count, 1, memory_order_relaxed);
-            if (idx < MAX_RESULTS) {
-                results[idx] = MatchResult{x, y, z};
-            }
-        }
-    }
-}
-)";
-
-// ---------------------------------------------------------------------------
-// Optimized kernel generation.
+// Kernel generation.
 //
 // The formation is baked into the source as literals so the block chain unrolls
 // into straight-line code with no constant-buffer loads. Two rewrites carry the
-// speedup, both bit-exact against the reference kernel (see --verify):
+// speedup over a direct transcription of the vanilla algorithm:
 //
 //   1. Forward differencing. Over a 64-aligned y segment, l = pxz ^ y decomposes
 //      to B + d with d a permutation of 0..63, so l(d) = A*d^2 + Q*d + P. A
@@ -125,8 +34,8 @@ kernel void search_textures(
 // gains from re-doing that kind of local rewrite here.
 //
 // Also measured and rejected: masking on 2+ blocks instead of 1 (k=2 is 1.74x,
-// k=3 1.36x, k=5 slower than the original -- each extra masked block costs a full
-// 64 multiplies per segment but removes only a handful of survivors).
+// k=3 1.36x, k=5 slower than the unoptimized original -- each extra masked block
+// costs a full 64 multiplies per segment but removes only a handful of survivors).
 //
 // NOTE: the CUDA backend runs the same algorithm but deliberately ships with the
 // bitmask DISABLED -- on Ada it is a 3.5x loss rather than a win. See the
@@ -299,13 +208,12 @@ static std::string generateOptimizedShader(const std::vector<RotationInfo>& bloc
 // Host helpers
 // ---------------------------------------------------------------------------
 static id<MTLComputePipelineState> buildPipeline(id<MTLDevice> device,
-                                                 const std::string& src,
-                                                 const char* label) {
+                                                 const std::string& src) {
     NSError* error = nil;
     NSString* source = [NSString stringWithUTF8String:src.c_str()];
     id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];
     if (!library) {
-        std::cerr << "Failed to compile " << label << " shader: "
+        std::cerr << "Failed to compile shader: "
                   << [[error localizedDescription] UTF8String] << std::endl;
         return nil;
     }
@@ -313,7 +221,7 @@ static id<MTLComputePipelineState> buildPipeline(id<MTLDevice> device,
     id<MTLComputePipelineState> pso = [device newComputePipelineStateWithFunction:fn
                                                                             error:&error];
     if (!pso) {
-        std::cerr << "Failed to create " << label << " pipeline: "
+        std::cerr << "Failed to create pipeline: "
                   << [[error localizedDescription] UTF8String] << std::endl;
         return nil;
     }
@@ -325,7 +233,6 @@ static id<MTLComputePipelineState> buildPipeline(id<MTLDevice> device,
 static bool runSearch(id<MTLDevice> device,
                       id<MTLCommandQueue> queue,
                       id<MTLComputePipelineState> pso,
-                      const std::vector<RotationInfo>& formation,
                       Uniforms bounds,
                       int maxResults,
                       int yOffsetFixup,
@@ -333,11 +240,6 @@ static bool runSearch(id<MTLDevice> device,
                       std::vector<MatchResult>& outResults,
                       int64_t& outCount,
                       double& outSeconds) {
-    id<MTLBuffer> blocksBuffer =
-        [device newBufferWithBytes:formation.data()
-                            length:formation.size() * sizeof(RotationInfo)
-                           options:MTLResourceStorageModeShared];
-
     id<MTLBuffer> uniformsBuffer = [device newBufferWithLength:sizeof(Uniforms)
                                                        options:MTLResourceStorageModeShared];
 
@@ -384,7 +286,6 @@ static bool runSearch(id<MTLDevice> device,
             id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
             id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
             [encoder setComputePipelineState:pso];
-            [encoder setBuffer:blocksBuffer offset:0 atIndex:0];
             [encoder setBuffer:uniformsBuffer offset:0 atIndex:1];
             [encoder setBuffer:countBuffer offset:0 atIndex:2];
             [encoder setBuffer:resultsBuffer offset:0 atIndex:3];
@@ -423,55 +324,13 @@ static bool runSearch(id<MTLDevice> device,
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Differential verification against the reference kernel.
-// Cases and reporting live in solver_common.h so the CUDA backend runs the
-// identical suite; only the run loop below is Metal-specific.
-// ---------------------------------------------------------------------------
-static int runVerify(id<MTLDevice> device, id<MTLCommandQueue> queue) {
-    const int maxResults = kVerifyMaxResults;
-    std::vector<VerifyCase> cases = makeVerifyCases();
-
-    id<MTLComputePipelineState> refPso = buildPipeline(
-        device,
-        "#define MAX_RESULTS " + std::to_string(maxResults) + "\n" + kReferenceShaderSrc,
-        "reference");
-    if (!refPso) return 1;
-
-    VerifyTally tally;
-    for (auto& c : cases) {
-        std::vector<RotationInfo> optFormation = c.formation;
-        orderByRejectionPower(optFormation);
-
-        id<MTLComputePipelineState> optPso = buildPipeline(
-            device, generateOptimizedShader(optFormation, maxResults), "optimized");
-        if (!optPso) return 1;
-
-        std::vector<MatchResult> refOut, optOut;
-        int64_t refCount = 0, optCount = 0;
-        double refSecs = 0, optSecs = 0;
-
-        if (!runSearch(device, queue, refPso, c.formation, c.bounds, maxResults, 0,
-                       false, refOut, refCount, refSecs)) return 1;
-        if (!runSearch(device, queue, optPso, optFormation, c.bounds, maxResults,
-                       blockZeroYOffset(optFormation), false, optOut, optCount, optSecs))
-            return 1;
-
-        reportVerifyCase(c.name, refOut, refCount, optOut, optCount,
-                         refSecs, optSecs, maxResults, tally);
-    }
-    return reportVerifySummary(tally);
-}
-
 static void printHelp(const char* prog) {
-    std::cout << "Usage: " << prog << " [x_min x_max y_min y_max z_min z_max]\n"
-              << "       " << prog << " --verify\n\n"
+    std::cout << "Usage: " << prog << " [x_min x_max y_min y_max z_min z_max]\n\n"
               << "Arguments:\n"
               << "  x_min x_max  Search bounds for X coordinates (default: -6000 6000)\n"
               << "  y_min y_max  Search bounds for Y coordinates (default: 60 256)\n"
               << "  z_min z_max  Search bounds for Z coordinates (default: -6000 6000)\n\n"
               << "Options:\n"
-              << "  --verify     Diff the optimized kernel against the reference kernel\n"
               << "  -h, --help   Show this help\n\n"
               << "Environment:\n"
               << "  LODESTONE_TG_H   Threadgroup height for tuning (default 8)\n\n"
@@ -495,11 +354,6 @@ int main(int argc, char* argv[]) {
         std::cout << "Using Metal GPU Device: " << [[device name] UTF8String] << std::endl;
         id<MTLCommandQueue> commandQueue = [device newCommandQueue];
 
-
-        if (argc > 1 && strcmp(argv[1], "--verify") == 0) {
-            return runVerify(device, commandQueue);
-        }
-
         std::vector<RotationInfo> formation = loadFormation();
         orderByRejectionPower(formation);
 
@@ -515,14 +369,14 @@ int main(int argc, char* argv[]) {
 
         if (!validateBounds(uniforms, formation)) return 1;
 
-        id<MTLComputePipelineState> pso = buildPipeline(
-            device, generateOptimizedShader(formation, kDefaultMaxResults), "optimized");
+        id<MTLComputePipelineState> pso =
+            buildPipeline(device, generateOptimizedShader(formation, kDefaultMaxResults));
         if (!pso) return 1;
 
         std::vector<MatchResult> results;
         int64_t count = 0;
         double seconds = 0;
-        if (!runSearch(device, commandQueue, pso, formation, uniforms, kDefaultMaxResults,
+        if (!runSearch(device, commandQueue, pso, uniforms, kDefaultMaxResults,
                        blockZeroYOffset(formation), true, results, count, seconds)) {
             return 1;
         }

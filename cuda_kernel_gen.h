@@ -23,78 +23,7 @@
 #include "solver_common.h"
 
 // ---------------------------------------------------------------------------
-// Reference kernel: a direct transcription of the original algorithm, kept for
-// differential testing only. Deliberately unoptimized and structurally identical
-// to the Metal reference so the two backends verify against the same semantics.
-// MAX_RESULTS is prepended by the caller.
-// ---------------------------------------------------------------------------
-static const char* kReferenceKernelSrc = R"(
-struct RotationInfo { int x, y, z, rotation, is_side; };
-struct Uniforms { int x_min, x_max, y_min, y_max, z_min, z_max, num_blocks; };
-struct MatchResult { int x, y, z; };
-
-__device__ __forceinline__ int get_texture_fast(long long part_xz, int y, int mod_val) {
-    long long l = part_xz ^ (long long)y;
-    l = l * l * 42317861LL + l * 11LL;
-    long long seed = (l >> 16) ^ 0x5DEECE66DLL;
-    seed = (seed * 0x5DEECE66DLL + 11LL) & ((1LL << 48) - 1LL);
-    int next = (int)(seed >> 17);
-    int res = next >> 29;
-    int rem = res % mod_val;
-    return rem < 0 ? rem + mod_val : rem;
-}
-
-extern "C" __global__ void search_textures(
-    const RotationInfo* blocks,
-    Uniforms uniforms,
-    int* result_count,
-    MatchResult* results)
-{
-    int x = uniforms.x_min + (int)(blockIdx.x * blockDim.x + threadIdx.x);
-    int z = uniforms.z_min + (int)(blockIdx.y * blockDim.y + threadIdx.y);
-
-    if (x > uniforms.x_max || z > uniforms.z_max) {
-        return;
-    }
-
-    int num_blocks = uniforms.num_blocks;
-
-    RotationInfo b0 = blocks[0];
-    int mod0 = b0.is_side ? 2 : 4;
-
-    for (int y = uniforms.y_min; y <= uniforms.y_max; y++) {
-        long long l0 = (long long)(int)((unsigned)(x + b0.x) * 3129871u)
-                     ^ ((long long)(z + b0.z) * 116129781LL);
-        if (b0.rotation != get_texture_fast(l0, y + b0.y, mod0)) {
-            continue;
-        }
-
-        bool match = true;
-        for (int i = 1; i < num_blocks; i++) {
-            RotationInfo b = blocks[i];
-            int mod_val = b.is_side ? 2 : 4;
-            long long l_b = (long long)(int)((unsigned)(x + b.x) * 3129871u)
-                          ^ ((long long)(z + b.z) * 116129781LL);
-            if (b.rotation != get_texture_fast(l_b, y + b.y, mod_val)) {
-                match = false;
-                break;
-            }
-        }
-
-        if (match) {
-            int idx = atomicAdd(result_count, 1);
-            if (idx < MAX_RESULTS) {
-                results[idx].x = x;
-                results[idx].y = y;
-                results[idx].z = z;
-            }
-        }
-    }
-}
-)";
-
-// ---------------------------------------------------------------------------
-// Optimized kernel. The formation is baked in as literals so the block chain
+// The formation is baked in as literals so the block chain
 // unrolls with no memory loads. Block 0 is forward-differenced across a 64-aligned
 // y segment using four strided streams; hits are recorded into a 64-bit mask and
 // only survivors descend into the block chain.
@@ -104,10 +33,11 @@ extern "C" __global__ void search_textures(
 // These deliberately differ from the Metal build, which is the same algorithm:
 // Metal ships bitmask=true because deferring the block chain past a per-segment
 // survivor mask was its single biggest win (1.25x -> 1.94x on an M1). On Ada the
-// identical change is a 3.5x LOSS -- measured against the reference kernel on a
-// 6001^2 x 291 box:
+// identical change is a 3.5x LOSS. Measured on a 6001^2 x 291 box, against the
+// original unspecialized kernel that this one replaced (0.1188 s, no longer in
+// the tree):
 //
-//     reference                          0.1188 s   1.00x
+//     unspecialized (historical)         0.1188 s   1.00x
 //     specialized only                   0.0661 s   1.80x
 //     + fwd-diff, 1 stream               0.0592 s   2.01x
 //     + fwd-diff, 4 streams              0.0569 s   2.09x   <- shipped
