@@ -127,6 +127,11 @@ kernel void search_textures(
 // Also measured and rejected: masking on 2+ blocks instead of 1 (k=2 is 1.74x,
 // k=3 1.36x, k=5 slower than the original -- each extra masked block costs a full
 // 64 multiplies per segment but removes only a handful of survivors).
+//
+// NOTE: the CUDA backend runs the same algorithm but deliberately ships with the
+// bitmask DISABLED -- on Ada it is a 3.5x loss rather than a win. See the
+// KernelOptions comment in cuda_kernel_gen.h. Neither default should be copied to
+// the other backend without re-measuring there.
 // ---------------------------------------------------------------------------
 static std::string generateOptimizedShader(const std::vector<RotationInfo>& blocks,
                                            int maxResults) {
