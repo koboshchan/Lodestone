@@ -1,0 +1,1700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quadrilateral 16x16 Image Sampler & Minecraft Orientation Detector</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      --bg-dark: #0f1117;
+      --bg-panel: #181b24;
+      --bg-card: #212532;
+      --bg-hover: #2d3345;
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --accent-red: #ef4444;
+      --accent-green: #10b981;
+      --accent-yellow: #fbbf24;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --border-color: rgba(255, 255, 255, 0.1);
+      --shadow-lg: 0 10px 30px -5px rgba(0, 0, 0, 0.75);
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
+      display: flex;
+    }
+
+    /* Main Full-Screen Workspace (No Top Bar) */
+    .app-body {
+      flex: 1;
+      display: flex;
+      position: relative;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    .viewport-container {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      position: relative;
+      background-color: #0b0c10;
+      background-image: 
+        radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+      background-size: 24px 24px;
+      overflow: hidden;
+      cursor: crosshair;
+    }
+
+    .viewport-container.panning {
+      cursor: grab !important;
+    }
+
+    .viewport-container.panning:active {
+      cursor: grabbing !important;
+    }
+
+    .viewport-container.dragging-handle {
+      cursor: move !important;
+    }
+
+    canvas#mainCanvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Drop Zone Overlay when empty */
+    .upload-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(15, 17, 23, 0.85);
+      backdrop-filter: blur(8px);
+      z-index: 5;
+      gap: 16px;
+      transition: opacity 0.2s ease;
+    }
+
+    .upload-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .upload-box {
+      border: 2px dashed rgba(255, 255, 255, 0.2);
+      border-radius: 12px;
+      padding: 40px 60px;
+      text-align: center;
+      background: rgba(24, 27, 36, 0.5);
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+
+    .upload-box:hover, .upload-box.dragover {
+      border-color: var(--primary);
+      background: rgba(99, 102, 241, 0.05);
+    }
+
+    .upload-icon {
+      width: 48px;
+      height: 48px;
+      margin: 0 auto 16px;
+      color: var(--primary);
+    }
+
+    /* Status Bar Overlay */
+    .status-bar {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      background: rgba(24, 27, 36, 0.9);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-color);
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      box-shadow: var(--shadow-lg);
+      z-index: 4;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 600;
+      color: var(--primary);
+    }
+
+    .status-badge::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--primary);
+      box-shadow: 0 0 8px var(--primary);
+    }
+
+    .shortcut-hint {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+
+    .shortcut-hint kbd {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      padding: 2px 5px;
+      border-radius: 4px;
+      color: var(--text-main);
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+    }
+
+    /* Hidden inputs */
+    input[type="file"] {
+      display: none;
+    }
+
+    /* Context Menu Shared Base (Strictly Clamped inside Viewport) */
+    .context-menu {
+      position: fixed;
+      background: rgba(24, 27, 36, 0.96);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 12px;
+      width: 280px;
+      max-height: calc(100vh - 20px);
+      overflow-y: auto;
+      box-shadow: var(--shadow-lg);
+      z-index: 100;
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .context-menu.active {
+      display: flex;
+    }
+
+    .context-menu-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.9rem;
+      font-weight: 700;
+      color: var(--text-main);
+      padding-bottom: 4px;
+    }
+
+    .brand-icon-sm {
+      width: 22px;
+      height: 22px;
+      background: linear-gradient(135deg, var(--primary), #a855f7);
+      border-radius: 5px;
+      display: grid;
+      place-items: center;
+    }
+
+    .brand-icon-sm svg {
+      width: 13px;
+      height: 13px;
+      fill: none;
+      stroke: white;
+      stroke-width: 2.5;
+    }
+
+    .context-header {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .pixel-canvas-wrap {
+      width: 80px;
+      height: 80px;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.8);
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .pixel-canvas-wrap canvas {
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    .context-meta {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .context-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .orientation-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--accent-green);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      width: fit-content;
+    }
+
+    .confidence-badge {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    .scores-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 0.7rem;
+      font-family: var(--font-mono);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .score-item {
+      display: flex;
+      justify-content: space-between;
+      color: var(--text-muted);
+    }
+
+    .score-item.active {
+      color: var(--accent-green);
+      font-weight: 700;
+    }
+
+    .menu-item {
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      font-weight: 500;
+      color: var(--text-main);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: background 0.1s ease;
+    }
+
+    .menu-item:hover {
+      background: var(--primary);
+      color: white;
+    }
+
+    .menu-item.danger:hover {
+      background: var(--accent-red);
+      color: white;
+    }
+
+    .menu-control-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 6px;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .menu-control-item select {
+      background: var(--bg-card);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .menu-divider {
+      height: 1px;
+      background: var(--border-color);
+      margin: 2px 0;
+    }
+
+    .menu-icon {
+      width: 15px;
+      height: 15px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Inputs -->
+  <input type="file" id="fileInput" accept="image/*">
+  <input type="file" id="importJsonInput" accept=".json">
+
+  <!-- Main Workspace (Full Window Height & Width) -->
+  <div class="app-body">
+    <div class="viewport-container" id="viewport">
+      <canvas id="mainCanvas"></canvas>
+
+      <!-- Empty Drag & Drop overlay -->
+      <div class="upload-overlay" id="uploadOverlay">
+        <div class="upload-box" id="uploadBox">
+          <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <circle cx="8.5" cy="8.5" r="1.5"></circle>
+            <polyline points="21 15 16 10 5 21"></polyline>
+          </svg>
+          <h3>Drop image here or click to load</h3>
+          <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px;">Right-click empty space for Controls Menu</p>
+        </div>
+      </div>
+
+      <!-- Status Bar Overlay -->
+      <div class="status-bar">
+        <div class="status-badge" id="statusBadge">Ready</div>
+        <div class="shortcut-hint">
+          <kbd>Right Click</kbd> Empty Space for Menu / Project Controls | <kbd>Right Click</kbd> Quad for Matrix Info
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 1. Quadrilateral Context Menu (Opened when right-clicking on a Quad) -->
+  <div class="context-menu" id="quadContextMenu">
+    <div class="context-header">
+      <div class="pixel-canvas-wrap">
+        <canvas id="menuPreviewCanvas" width="80" height="80"></canvas>
+      </div>
+      <div class="context-meta">
+        <div class="context-title">16x16 Matrix</div>
+        <div class="orientation-badge" id="menuOrientationBadge">🧭 North (0°)</div>
+        <div class="confidence-badge" id="menuConfidenceBadge">Confidence: 100% (Facing 0)</div>
+      </div>
+    </div>
+
+    <!-- Scores Breakdown Grid -->
+    <div class="scores-grid" id="menuScoresGrid"></div>
+
+    <div class="menu-divider"></div>
+
+    <div class="menu-item" id="menuDownload">
+      <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+      Download 16x16 PNG
+    </div>
+    <div class="menu-item" id="menuCopy">
+      <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+      Duplicate Quadrilateral
+    </div>
+    <div class="menu-divider"></div>
+    <div class="menu-item danger" id="menuRemove">
+      <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+      Remove Quadrilateral
+    </div>
+  </div>
+
+  <!-- 2. Global Space Context Menu (Opened when right-clicking empty space) -->
+  <div class="context-menu" id="globalContextMenu">
+    <div class="context-menu-title">
+      <div class="brand-icon-sm">
+        <svg viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+      </div>
+      Workspace Controls
+    </div>
+
+    <div class="menu-divider"></div>
+
+    <label class="menu-item" for="fileInput" id="globalLoadImgLabel">
+      <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+      Load Image
+    </label>
+
+    <div class="menu-item" id="globalExportJson">
+      <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+      Export Project JSON
+    </div>
+
+    <label class="menu-item" for="importJsonInput" id="globalImportJsonLabel">
+      <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+      Import Project JSON
+    </label>
+
+    <div class="menu-divider"></div>
+
+    <div class="menu-control-item">
+      <span>North Guide:</span>
+      <select id="northGuideSelect">
+        <option value="0" selected>Top Edge (0°)</option>
+        <option value="90">Right Edge (90°)</option>
+        <option value="180">Bottom Edge (180°)</option>
+        <option value="270">Left Edge (270°)</option>
+      </select>
+    </div>
+
+    <div class="menu-control-item">
+      <span>Projection:</span>
+      <select id="gridModeSelect">
+        <option value="homography" selected>Homography 3D</option>
+        <option value="bilinear">Bilinear 2D</option>
+      </select>
+    </div>
+
+    <div class="menu-divider"></div>
+
+    <div class="menu-item" id="globalResetView">
+      <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6"></path><path d="M9 21H3v-6"></path><path d="M21 3l-7 7"></path><path d="M3 21l7-7"></path></svg>
+      Reset View (Zoom/Pan)
+    </div>
+
+    <div class="menu-item danger" id="globalClearShapes">
+      <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+      Clear All Shapes
+    </div>
+  </div>
+
+  <script>
+    // --- Reference Image Matrix: grass_block_top.png (Facing 0, North) ---
+    const REFERENCE_GRASS_BLOCK_TOP = [
+      [148, 195, 147, 134, 134, 143, 127, 140, 158, 150, 138, 135, 137, 167, 112, 141],
+      [149, 140, 160, 151, 153, 128, 153, 130, 127, 169, 166, 147, 195, 140, 135, 139],
+      [163, 141, 125, 132, 137, 136, 144, 144, 148, 159, 168, 173, 135, 119, 128, 182],
+      [118, 133, 138, 151, 145, 153, 125, 146, 127, 131, 141, 151, 143, 139, 167, 125],
+      [162, 131, 173, 131, 172, 174, 136, 172, 186, 117, 128, 167, 171, 126, 136, 141],
+      [153, 152, 120, 166, 129, 150, 149, 155, 135, 149, 136, 131, 120, 136, 142, 148],
+      [126, 156, 165, 144, 146, 131, 138, 127, 132, 135, 181, 172, 145, 167, 151, 143],
+      [143, 135, 157, 139, 144, 124, 164, 132, 151, 173, 135, 129, 143, 160, 127, 169],
+      [167, 155, 182, 170, 172, 129, 173, 156, 179, 170, 130, 146, 133, 147, 158, 126],
+      [151, 130, 183, 141, 140, 152, 170, 128, 135, 145, 146, 169, 142, 179, 143, 129],
+      [155, 158, 151, 165, 130, 182, 142, 147, 192, 121, 167, 131, 143, 136, 151, 143],
+      [132, 173, 134, 163, 151, 132, 146, 137, 151, 146, 140, 123, 179, 127, 125, 138],
+      [186, 151, 129, 138, 153, 145, 133, 122, 138, 145, 138, 125, 159, 165, 121, 151],
+      [129, 168, 118, 146, 125, 153, 129, 195, 161, 147, 168, 155, 160, 136, 168, 174],
+      [163, 161, 192, 123, 179, 171, 148, 147, 126, 149, 149, 135, 169, 157, 139, 121],
+      [133, 150, 136, 137, 164, 152, 148, 147, 142, 191, 124, 169, 132, 144, 136, 158]
+    ];
+
+    const STORAGE_KEY = 'quadmatrix_app_state_v1';
+
+    // --- Application State ---
+    const state = {
+      image: null,
+      imageDataUrl: null,
+      imageLoaded: false,
+      gridMode: 'homography',
+      northGuideAngle: 0,
+      scale: 1,
+      panX: 0,
+      panY: 0,
+      isPanning: false,
+      panStartX: 0,
+      panStartY: 0,
+      isSpacePressed: false,
+      quads: [],
+      currentPoints: [],
+      mouseImgPos: { x: 0, y: 0 },
+      copyingQuad: null,
+      draggedHandle: null,
+      hoveredHandle: null,
+      contextQuadId: null
+    };
+
+    // --- DOM Elements ---
+    const viewport = document.getElementById('viewport');
+    const canvas = document.getElementById('mainCanvas');
+    const ctx = canvas.getContext('2d');
+    const fileInput = document.getElementById('fileInput');
+    const importJsonInput = document.getElementById('importJsonInput');
+    const uploadOverlay = document.getElementById('uploadOverlay');
+    const uploadBox = document.getElementById('uploadBox');
+    const statusBadge = document.getElementById('statusBadge');
+    
+    // Context Menus
+    const quadContextMenu = document.getElementById('quadContextMenu');
+    const globalContextMenu = document.getElementById('globalContextMenu');
+
+    const menuPreviewCanvas = document.getElementById('menuPreviewCanvas');
+    const menuOrientationBadge = document.getElementById('menuOrientationBadge');
+    const menuConfidenceBadge = document.getElementById('menuConfidenceBadge');
+    const menuScoresGrid = document.getElementById('menuScoresGrid');
+    const menuDownload = document.getElementById('menuDownload');
+    const menuCopy = document.getElementById('menuCopy');
+    const menuRemove = document.getElementById('menuRemove');
+
+    const gridModeSelect = document.getElementById('gridModeSelect');
+    const northGuideSelect = document.getElementById('northGuideSelect');
+    const globalExportJson = document.getElementById('globalExportJson');
+    const globalResetView = document.getElementById('globalResetView');
+    const globalClearShapes = document.getElementById('globalClearShapes');
+    const globalLoadImgLabel = document.getElementById('globalLoadImgLabel');
+    const globalImportJsonLabel = document.getElementById('globalImportJsonLabel');
+
+    gridModeSelect.addEventListener('change', (e) => {
+      state.gridMode = e.target.value;
+      updateStatus(`Switched projection to ${e.target.value === 'homography' ? '3D Perspective' : '2D Bilinear'}`);
+      state.quads.forEach(q => updateQuadAnalysis(q));
+      saveStateToStorage();
+      requestAnimationFrame(render);
+    });
+
+    northGuideSelect.addEventListener('change', (e) => {
+      state.northGuideAngle = parseInt(e.target.value, 10);
+      updateStatus(`North Guide Line set to ${e.target.options[e.target.selectedIndex].text}`);
+      state.quads.forEach(q => updateQuadAnalysis(q));
+      saveStateToStorage();
+      requestAnimationFrame(render);
+    });
+
+    globalLoadImgLabel.addEventListener('click', () => closeAllContextMenus());
+    globalImportJsonLabel.addEventListener('click', () => closeAllContextMenus());
+
+    globalExportJson.addEventListener('click', () => {
+      exportProjectJSON();
+      closeAllContextMenus();
+    });
+
+    globalResetView.addEventListener('click', () => {
+      resetView();
+      closeAllContextMenus();
+    });
+
+    globalClearShapes.addEventListener('click', () => {
+      state.quads = [];
+      state.currentPoints = [];
+      state.copyingQuad = null;
+      state.draggedHandle = null;
+      saveStateToStorage();
+      requestAnimationFrame(render);
+      updateStatus('Cleared all shapes');
+      closeAllContextMenus();
+    });
+
+    function exportProjectJSON() {
+      const projectData = {
+        appName: "QuadMatrix 16x16",
+        version: "1.1",
+        exportedAt: new Date().toISOString(),
+        gridMode: state.gridMode,
+        northGuideAngle: state.northGuideAngle,
+        imageDataUrl: state.imageDataUrl,
+        quads: state.quads.map(q => ({
+          id: q.id,
+          points: q.points
+        }))
+      };
+
+      const jsonStr = JSON.stringify(projectData, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `quadmatrix_project_${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      updateStatus('Exported project JSON file');
+    }
+
+    importJsonInput.addEventListener('change', (e) => {
+      if (e.target.files.length === 0) return;
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        try {
+          const data = JSON.parse(evt.target.result);
+          if (data.gridMode) {
+            state.gridMode = data.gridMode;
+            gridModeSelect.value = data.gridMode;
+          }
+          if (typeof data.northGuideAngle === 'number') {
+            state.northGuideAngle = data.northGuideAngle;
+            northGuideSelect.value = data.northGuideAngle.toString();
+          }
+          if (Array.isArray(data.quads)) {
+            state.quads = data.quads;
+          }
+          if (data.imageDataUrl) {
+            state.imageDataUrl = data.imageDataUrl;
+            const img = new Image();
+            img.onload = () => {
+              state.image = img;
+              state.imageLoaded = true;
+              uploadOverlay.classList.add('hidden');
+              resetView();
+              state.quads.forEach(q => updateQuadAnalysis(q));
+              saveStateToStorage();
+              updateStatus('Imported project JSON file successfully');
+            };
+            img.src = data.imageDataUrl;
+          } else {
+            state.quads.forEach(q => updateQuadAnalysis(q));
+            saveStateToStorage();
+            requestAnimationFrame(render);
+            updateStatus('Imported project shapes from JSON');
+          }
+        } catch (err) {
+          alert('Invalid JSON project file.');
+          console.error(err);
+        }
+      };
+      reader.readAsText(file);
+      e.target.value = '';
+    });
+
+    // --- LocalStorage Persistence ---
+    function saveStateToStorage() {
+      try {
+        const payload = {
+          gridMode: state.gridMode,
+          northGuideAngle: state.northGuideAngle,
+          quads: state.quads,
+          imageDataUrl: state.imageDataUrl
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      } catch (err) {
+        console.warn('LocalStorage save failed:', err);
+      }
+    }
+
+    function loadStateFromStorage() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return;
+        const data = JSON.parse(raw);
+
+        if (data.gridMode) {
+          state.gridMode = data.gridMode;
+          gridModeSelect.value = data.gridMode;
+        }
+
+        if (typeof data.northGuideAngle === 'number') {
+          state.northGuideAngle = data.northGuideAngle;
+          northGuideSelect.value = data.northGuideAngle.toString();
+        }
+
+        if (Array.isArray(data.quads)) {
+          state.quads = data.quads;
+        }
+
+        if (data.imageDataUrl) {
+          state.imageDataUrl = data.imageDataUrl;
+          const img = new Image();
+          img.onload = () => {
+            state.image = img;
+            state.imageLoaded = true;
+            uploadOverlay.classList.add('hidden');
+            resetView();
+
+            state.quads.forEach(q => updateQuadAnalysis(q));
+            updateStatus('Restored session from browser storage');
+          };
+          img.src = data.imageDataUrl;
+        }
+      } catch (err) {
+        console.warn('LocalStorage restore failed:', err);
+      }
+    }
+
+    // --- Canvas Setup ---
+    function resizeCanvas() {
+      const rect = viewport.getBoundingClientRect();
+      canvas.width = rect.width;
+      canvas.height = rect.height;
+      requestAnimationFrame(render);
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // --- Image Loading ---
+    function loadImageFromFile(file) {
+      if (!file || !file.type.startsWith('image/')) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target.result;
+        const img = new Image();
+        img.onload = () => {
+          state.image = img;
+          state.imageDataUrl = dataUrl;
+          state.imageLoaded = true;
+          state.quads = [];
+          state.currentPoints = [];
+          state.copyingQuad = null;
+          uploadOverlay.classList.add('hidden');
+          resetView();
+          saveStateToStorage();
+          updateStatus('Image Loaded & Saved to Browser');
+        };
+        img.src = dataUrl;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        loadImageFromFile(e.target.files[0]);
+      }
+    });
+
+    uploadBox.addEventListener('click', () => fileInput.click());
+    viewport.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      uploadBox.classList.add('dragover');
+    });
+    viewport.addEventListener('dragleave', () => uploadBox.classList.remove('dragover'));
+    viewport.addEventListener('drop', (e) => {
+      e.preventDefault();
+      uploadBox.classList.remove('dragover');
+      if (e.dataTransfer.files.length > 0) {
+        loadImageFromFile(e.dataTransfer.files[0]);
+      }
+    });
+
+    function resetView() {
+      if (!state.image) return;
+      const vw = canvas.width;
+      const vh = canvas.height;
+      const imgW = state.image.width;
+      const imgH = state.image.height;
+
+      const margin = 60;
+      const scaleW = (vw - margin * 2) / imgW;
+      const scaleH = (vh - margin * 2) / imgH;
+      state.scale = Math.min(scaleW, scaleH, 1.0);
+      
+      state.panX = (vw - imgW * state.scale) / 2;
+      state.panY = (vh - imgH * state.scale) / 2;
+      requestAnimationFrame(render);
+    }
+
+    function screenToImage(screenX, screenY) {
+      return {
+        x: (screenX - state.panX) / state.scale,
+        y: (screenY - state.panY) / state.scale
+      };
+    }
+
+    function imageToScreen(imgX, imgY) {
+      return {
+        x: imgX * state.scale + state.panX,
+        y: imgY * state.scale + state.panY
+      };
+    }
+
+    // --- Perspective & Math Helpers ---
+    function computeHomography(pts) {
+      if (!pts || pts.length !== 4) return null;
+      const x0 = pts[0].x, y0 = pts[0].y;
+      const x1 = pts[1].x, y1 = pts[1].y;
+      const x2 = pts[2].x, y2 = pts[2].y;
+      const x3 = pts[3].x, y3 = pts[3].y;
+
+      const dx1 = x1 - x2, dx2 = x3 - x2;
+      const sx = x0 - x1 + x2 - x3;
+
+      const dy1 = y1 - y2, dy2 = y3 - y2;
+      const sy = y0 - y1 + y2 - y3;
+
+      if (Math.abs(sx) < 1e-6 && Math.abs(sy) < 1e-6) {
+        return {
+          h00: x1 - x0, h01: x3 - x0, h02: x0,
+          h10: y1 - y0, h11: y3 - y0, h12: y0,
+          h20: 0,       h21: 0,       h22: 1
+        };
+      } else {
+        const det = dx1 * dy2 - dx2 * dy1;
+        if (Math.abs(det) < 1e-10) {
+          return {
+            h00: x1 - x0, h01: x3 - x0, h02: x0,
+            h10: y1 - y0, h11: y3 - y0, h12: y0,
+            h20: 0,       h21: 0,       h22: 1
+          };
+        }
+        const h20 = (sx * dy2 - sy * dx2) / det;
+        const h21 = (dx1 * sy - dy1 * sx) / det;
+
+        return {
+          h00: x1 - x0 + h20 * x1,
+          h01: x3 - x0 + h21 * x3,
+          h02: x0,
+          h10: y1 - y0 + h20 * y1,
+          h11: y3 - y0 + h21 * y3,
+          h12: y0,
+          h20: h20,
+          h21: h21,
+          h22: 1
+        };
+      }
+    }
+
+    function transformHomography(H, u, v) {
+      if (!H) return { x: 0, y: 0 };
+      const w = H.h20 * u + H.h21 * v + 1;
+      return {
+        x: (H.h00 * u + H.h01 * v + H.h02) / w,
+        y: (H.h10 * u + H.h11 * v + H.h12) / w
+      };
+    }
+
+    function getBilinearPoint(quad, u, v) {
+      const TL = quad[0], TR = quad[1], BR = quad[2], BL = quad[3];
+      const x = (1 - u) * (1 - v) * TL.x + u * (1 - v) * TR.x + u * v * BR.x + (1 - u) * v * BL.x;
+      const y = (1 - u) * (1 - v) * TL.y + u * (1 - v) * TR.y + u * v * BR.y + (1 - u) * v * BL.y;
+      return { x, y };
+    }
+
+    function evaluateQuadPoint(quad, u, v, mode = state.gridMode) {
+      if (mode === 'homography') {
+        const H = computeHomography(quad);
+        return transformHomography(H, u, v);
+      } else {
+        return getBilinearPoint(quad, u, v);
+      }
+    }
+
+    function isPointInQuad(pt, quad) {
+      let inside = false;
+      for (let i = 0, j = quad.length - 1; i < quad.length; j = i++) {
+        const xi = quad[i].x, yi = quad[i].y;
+        const xj = quad[j].x, yj = quad[j].y;
+        const intersect = ((yi > pt.y) !== (yj > pt.y)) &&
+            (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    }
+
+    function sortQuadPoints(pts) {
+      if (pts.length !== 4) return pts;
+      const cx = (pts[0].x + pts[1].x + pts[2].x + pts[3].x) / 4;
+      const cy = (pts[0].y + pts[1].y + pts[2].y + pts[3].y) / 4;
+
+      const mapped = pts.map(p => ({
+        x: p.x,
+        y: p.y,
+        angle: Math.atan2(p.y - cy, p.x - cx)
+      }));
+
+      mapped.sort((a, b) => a.angle - b.angle);
+
+      let minSum = Infinity;
+      let startIndex = 0;
+      for (let i = 0; i < 4; i++) {
+        const sum = mapped[i].x + mapped[i].y;
+        if (sum < minSum) {
+          minSum = sum;
+          startIndex = i;
+        }
+      }
+
+      const reordered = [];
+      for (let i = 0; i < 4; i++) {
+        const idx = (startIndex + i) % 4;
+        reordered.push({ x: mapped[idx].x, y: mapped[idx].y });
+      }
+
+      return reordered;
+    }
+
+    function findCornerHandleNearScreen(screenX, screenY, maxDistPx = 12) {
+      for (let i = state.quads.length - 1; i >= 0; i--) {
+        const q = state.quads[i];
+        for (let j = 0; j < q.points.length; j++) {
+          const ptScreen = imageToScreen(q.points[j].x, q.points[j].y);
+          const dist = Math.hypot(screenX - ptScreen.x, screenY - ptScreen.y);
+          if (dist <= maxDistPx) {
+            return { quadId: q.id, pointIdx: j };
+          }
+        }
+      }
+      return null;
+    }
+
+    // --- Minecraft Block Orientation Analysis ---
+    function getCenter6x6FromRef(refMatrix, angle) {
+      const center = [];
+      for (let r = 5; r <= 10; r++) {
+        for (let c = 5; c <= 10; c++) {
+          let origR, origC;
+          if (angle === 0) {
+            origR = r; origC = c;
+          } else if (angle === 90) {
+            origR = 15 - c; origC = r;
+          } else if (angle === 180) {
+            origR = 15 - r; origC = 15 - c;
+          } else if (angle === 270) {
+            origR = c; origC = 15 - r;
+          }
+          center.push(refMatrix[origR][origC]);
+        }
+      }
+      return center;
+    }
+
+    function analyzeOrientation(cand16x16ImageData) {
+      const candLuminance = [];
+      for (let r = 0; r < 16; r++) {
+        const row = [];
+        for (let c = 0; c < 16; c++) {
+          const idx = (r * 16 + c) * 4;
+          const R = cand16x16ImageData.data[idx];
+          const G = cand16x16ImageData.data[idx + 1];
+          const B = cand16x16ImageData.data[idx + 2];
+          const lum = 0.299 * R + 0.587 * G + 0.114 * B;
+          row.push(lum);
+        }
+        candLuminance.push(row);
+      }
+
+      const candCenter = [];
+      for (let r = 5; r <= 10; r++) {
+        for (let c = 5; c <= 10; c++) {
+          candCenter.push(candLuminance[r][c]);
+        }
+      }
+
+      const meanCand = candCenter.reduce((a, b) => a + b, 0) / candCenter.length;
+      const stdCand = Math.sqrt(candCenter.reduce((a, b) => a + Math.pow(b - meanCand, 2), 0) / candCenter.length);
+
+      const angles = [
+        { name: 'North (0°)', code: 'North', facing: 0, rawAngle: 0 },
+        { name: 'East (90°)', code: 'East', facing: 1, rawAngle: 90 },
+        { name: 'South (180°)', code: 'South', facing: 2, rawAngle: 180 },
+        { name: 'West (270°)', code: 'West', facing: 3, rawAngle: 270 }
+      ];
+
+      const scores = angles.map(dir => {
+        const evalAngle = (dir.rawAngle + state.northGuideAngle) % 360;
+        const refCenter = getCenter6x6FromRef(REFERENCE_GRASS_BLOCK_TOP, evalAngle);
+        const meanRef = refCenter.reduce((a, b) => a + b, 0) / refCenter.length;
+        const stdRef = Math.sqrt(refCenter.reduce((a, b) => a + Math.pow(b - meanRef, 2), 0) / refCenter.length);
+
+        let cov = 0;
+        for (let i = 0; i < candCenter.length; i++) {
+          cov += (candCenter[i] - meanCand) * (refCenter[i] - meanRef);
+        }
+        cov /= candCenter.length;
+
+        const corr = (stdCand > 1e-5 && stdRef > 1e-5) ? cov / (stdCand * stdRef) : 0;
+        return { ...dir, corr, angle: (dir.rawAngle + state.northGuideAngle) % 360 };
+      });
+
+      scores.sort((a, b) => b.corr - a.corr);
+
+      const best = scores[0];
+      const second = scores[1];
+
+      let confidencePct = 0;
+      if (best.corr > 0) {
+        const margin = best.corr - second.corr;
+        confidencePct = Math.min(100, Math.max(0, Math.round(best.corr * 75 + margin * 25)));
+      }
+
+      return {
+        bestOrientation: best.name,
+        facing: best.facing,
+        angle: best.angle,
+        confidence: confidencePct,
+        bestCorr: best.corr,
+        scores: scores
+      };
+    }
+
+    // --- Automatic 16x16 Conversion & Analysis for Quadrilateral ---
+    function updateQuadAnalysis(quad) {
+      if (!state.image || !quad || !quad.points || quad.points.length !== 4) return;
+
+      const sampleCanvas = document.createElement('canvas');
+      sampleCanvas.width = state.image.width;
+      sampleCanvas.height = state.image.height;
+      const sampleCtx = sampleCanvas.getContext('2d');
+      sampleCtx.drawImage(state.image, 0, 0);
+
+      const imgData = sampleCtx.getImageData(0, 0, state.image.width, state.image.height);
+      const data = imgData.data;
+      const imgW = state.image.width;
+      const imgH = state.image.height;
+
+      const outputCanvas = document.createElement('canvas');
+      outputCanvas.width = 16;
+      outputCanvas.height = 16;
+      const outCtx = outputCanvas.getContext('2d');
+      const outImgData = outCtx.createImageData(16, 16);
+
+      for (let j = 0; j < 16; j++) {
+        for (let i = 0; i < 16; i++) {
+          const u0 = i / 16, u1 = (i + 1) / 16;
+          const v0 = j / 16, v1 = (j + 1) / 16;
+
+          let sumR = 0, sumG = 0, sumB = 0, sumA = 0, count = 0;
+
+          for (let sv = 0.1; sv < 1.0; sv += 0.2) {
+            for (let su = 0.1; su < 1.0; su += 0.2) {
+              const u = u0 + su * (u1 - u0);
+              const v = v0 + sv * (v1 - v0);
+              
+              const pt = evaluateQuadPoint(quad.points, u, v);
+              const px = Math.floor(pt.x);
+              const py = Math.floor(pt.y);
+
+              if (px >= 0 && px < imgW && py >= 0 && py < imgH) {
+                const idx = (py * imgW + px) * 4;
+                sumR += data[idx];
+                sumG += data[idx + 1];
+                sumB += data[idx + 2];
+                sumA += data[idx + 3];
+                count++;
+              }
+            }
+          }
+
+          const outIdx = (j * 16 + i) * 4;
+          if (count > 0) {
+            outImgData.data[outIdx] = Math.round(sumR / count);
+            outImgData.data[outIdx + 1] = Math.round(sumG / count);
+            outImgData.data[outIdx + 2] = Math.round(sumB / count);
+            outImgData.data[outIdx + 3] = Math.round(sumA / count);
+          } else {
+            outImgData.data[outIdx + 3] = 0;
+          }
+        }
+      }
+
+      outCtx.putImageData(outImgData, 0, 0);
+
+      const analysis = analyzeOrientation(outImgData);
+      const dataUrl = outputCanvas.toDataURL('image/png');
+
+      quad.analysisResult = {
+        dataUrl,
+        analysis,
+        canvas: outputCanvas
+      };
+    }
+
+    // --- Overlay North Arrow helper for thumbnails ---
+    function drawNorthArrowOverlay(previewCanvasElem, angleDegrees) {
+      const pCtx = previewCanvasElem.getContext('2d');
+      const w = previewCanvasElem.width;
+      const h = previewCanvasElem.height;
+      const cx = w / 2;
+      const cy = h / 2;
+
+      pCtx.save();
+      pCtx.translate(cx, cy);
+      pCtx.rotate((angleDegrees * Math.PI) / 180);
+
+      const arrowLen = w * 0.36;
+      const headSize = w * 0.16;
+
+      pCtx.shadowColor = 'rgba(0, 0, 0, 0.95)';
+      pCtx.shadowBlur = 6;
+
+      pCtx.strokeStyle = '#ef4444';
+      pCtx.lineWidth = Math.max(3, w * 0.07);
+      pCtx.beginPath();
+      pCtx.moveTo(0, arrowLen * 0.45);
+      pCtx.lineTo(0, -arrowLen * 0.4);
+      pCtx.stroke();
+
+      pCtx.fillStyle = '#ef4444';
+      pCtx.beginPath();
+      pCtx.moveTo(0, -arrowLen * 0.52);
+      pCtx.lineTo(-headSize, -arrowLen * 0.12);
+      pCtx.lineTo(headSize, -arrowLen * 0.12);
+      pCtx.closePath();
+      pCtx.fill();
+
+      pCtx.shadowBlur = 4;
+      pCtx.fillStyle = '#ffffff';
+      pCtx.font = `900 ${Math.round(w * 0.2)}px sans-serif`;
+      pCtx.textAlign = 'center';
+      pCtx.textBaseline = 'middle';
+      pCtx.fillText('N', 0, -arrowLen * 0.72);
+
+      pCtx.restore();
+    }
+
+    // --- Draw North Arrow ACCORDING TO QUADRILATERAL PERSPECTIVE SURFACE ---
+    function drawNorthArrowOnQuadCanvas(targetCtx, quadPts, angleDegrees) {
+      if (!quadPts || quadPts.length !== 4) return;
+
+      const effectiveAngle = (angleDegrees + state.northGuideAngle) % 360;
+
+      let uCenter = 0.5, vCenter = 0.5;
+      let uTip = 0.5, vTip = 0.18;
+      let uLeft = 0.42, vLeft = 0.30;
+      let uRight = 0.58, vRight = 0.30;
+
+      if (effectiveAngle === 90) { // Right Edge
+        uTip = 0.82; vTip = 0.5;
+        uLeft = 0.70; vLeft = 0.42;
+        uRight = 0.70; vRight = 0.58;
+      } else if (effectiveAngle === 180) { // Bottom Edge
+        uTip = 0.5; vTip = 0.82;
+        uLeft = 0.58; vLeft = 0.70;
+        uRight = 0.42; vRight = 0.70;
+      } else if (effectiveAngle === 270) { // Left Edge
+        uTip = 0.18; vTip = 0.5;
+        uLeft = 0.30; vLeft = 0.58;
+        uRight = 0.30; vRight = 0.42;
+      }
+
+      const pCenter = evaluateQuadPoint(quadPts, uCenter, vCenter);
+      const pTip = evaluateQuadPoint(quadPts, uTip, vTip);
+      const pLeft = evaluateQuadPoint(quadPts, uLeft, vLeft);
+      const pRight = evaluateQuadPoint(quadPts, uRight, vRight);
+
+      targetCtx.save();
+
+      targetCtx.shadowColor = 'rgba(0, 0, 0, 0.9)';
+      targetCtx.shadowBlur = 6 / state.scale;
+
+      // Red Arrow Stem
+      targetCtx.strokeStyle = '#ef4444';
+      targetCtx.lineWidth = 3.5 / state.scale;
+      targetCtx.beginPath();
+      targetCtx.moveTo(pCenter.x, pCenter.y);
+      targetCtx.lineTo(pTip.x, pTip.y);
+      targetCtx.stroke();
+
+      // Red Arrow Head
+      targetCtx.fillStyle = '#ef4444';
+      targetCtx.beginPath();
+      targetCtx.moveTo(pTip.x, pTip.y);
+      targetCtx.lineTo(pLeft.x, pLeft.y);
+      targetCtx.lineTo(pRight.x, pRight.y);
+      targetCtx.closePath();
+      targetCtx.fill();
+
+      // White 'N' Label
+      const labelVecX = pTip.x - pCenter.x;
+      const labelVecY = pTip.y - pCenter.y;
+      const textX = pTip.x + labelVecX * 0.25;
+      const textY = pTip.y + labelVecY * 0.25;
+
+      targetCtx.fillStyle = '#ffffff';
+      targetCtx.font = `900 ${Math.max(12 / state.scale, 14)}px sans-serif`;
+      targetCtx.textAlign = 'center';
+      targetCtx.textBaseline = 'middle';
+      targetCtx.fillText('N', textX, textY);
+
+      targetCtx.restore();
+    }
+
+    // --- Interaction Listeners ---
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' && !state.isSpacePressed) {
+        state.isSpacePressed = true;
+        viewport.classList.add('panning');
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      if (e.code === 'Space') {
+        state.isSpacePressed = false;
+        state.isPanning = false;
+        viewport.classList.remove('panning');
+      }
+    });
+
+    viewport.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      state.mouseImgPos = screenToImage(mouseX, mouseY);
+
+      if (state.draggedHandle) {
+        const quad = state.quads.find(q => q.id === state.draggedHandle.quadId);
+        if (quad) {
+          quad.points[state.draggedHandle.pointIdx] = { ...state.mouseImgPos };
+          requestAnimationFrame(render);
+        }
+        return;
+      }
+
+      if (state.isPanning) {
+        state.panX = mouseX - state.panStartX;
+        state.panY = mouseY - state.panStartY;
+        requestAnimationFrame(render);
+        return;
+      }
+
+      const handleHit = findCornerHandleNearScreen(mouseX, mouseY);
+      if (handleHit) {
+        state.hoveredHandle = handleHit;
+        viewport.style.cursor = 'pointer';
+      } else {
+        if (state.hoveredHandle) {
+          state.hoveredHandle = null;
+          viewport.style.cursor = 'crosshair';
+        }
+      }
+
+      if (state.currentPoints.length === 3 || state.copyingQuad) {
+        requestAnimationFrame(render);
+      }
+    });
+
+    viewport.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      if (!state.imageLoaded) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      const zoomFactor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const newScale = Math.min(Math.max(state.scale * zoomFactor, 0.05), 40);
+
+      state.panX = mouseX - (mouseX - state.panX) * (newScale / state.scale);
+      state.panY = mouseY - (mouseY - state.panY) * (newScale / state.scale);
+      state.scale = newScale;
+
+      requestAnimationFrame(render);
+    }, { passive: false });
+
+    viewport.addEventListener('mousedown', (e) => {
+      closeAllContextMenus();
+
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      if (state.isSpacePressed || e.button === 1) {
+        state.isPanning = true;
+        state.panStartX = mouseX - state.panX;
+        state.panStartY = mouseY - state.panY;
+        return;
+      }
+
+      if (e.button === 0 && state.imageLoaded) {
+        const handleHit = findCornerHandleNearScreen(mouseX, mouseY);
+        if (handleHit) {
+          state.draggedHandle = handleHit;
+          viewport.classList.add('dragging-handle');
+          updateStatus('Dragging corner handle');
+          return;
+        }
+
+        const imgPt = screenToImage(mouseX, mouseY);
+
+        if (state.copyingQuad) {
+          const placedPoints = state.copyingQuad.points.map(p => ({
+            x: p.x + (imgPt.x - state.copyingQuad.anchor.x),
+            y: p.y + (imgPt.y - state.copyingQuad.anchor.y)
+          }));
+
+          const newQuad = {
+            id: Date.now(),
+            points: sortQuadPoints(placedPoints)
+          };
+
+          updateQuadAnalysis(newQuad);
+          state.quads.push(newQuad);
+
+          state.copyingQuad = null;
+          updateStatus('Placed duplicated quadrilateral (Auto Analyzed)');
+          saveStateToStorage();
+          requestAnimationFrame(render);
+          return;
+        }
+
+        if (state.currentPoints.length < 3) {
+          state.currentPoints.push(imgPt);
+          updateStatus(`Placed point ${state.currentPoints.length}/4`);
+        } else if (state.currentPoints.length === 3) {
+          state.currentPoints.push(imgPt);
+          const sortedQuad = sortQuadPoints(state.currentPoints);
+          
+          const newQuad = {
+            id: Date.now(),
+            points: sortedQuad
+          };
+
+          updateQuadAnalysis(newQuad);
+          state.quads.push(newQuad);
+
+          state.currentPoints = [];
+          updateStatus(`Quadrilateral created & auto-analyzed: ${newQuad.analysisResult.analysis.bestOrientation}`);
+          saveStateToStorage();
+        }
+
+        requestAnimationFrame(render);
+      }
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (state.draggedHandle) {
+        const quad = state.quads.find(q => q.id === state.draggedHandle.quadId);
+        if (quad) {
+          updateQuadAnalysis(quad);
+        }
+        state.draggedHandle = null;
+        viewport.classList.remove('dragging-handle');
+        updateStatus('Re-analyzed block orientation on handle release');
+        saveStateToStorage();
+        requestAnimationFrame(render);
+      }
+      if (state.isPanning && !state.isSpacePressed) {
+        state.isPanning = false;
+      }
+    });
+
+    // Right Click Event Handling: Quad Menu vs Empty Space Global Menu
+    viewport.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      const imgPt = screenToImage(mouseX, mouseY);
+
+      let hitQuad = null;
+      if (state.imageLoaded) {
+        for (let i = state.quads.length - 1; i >= 0; i--) {
+          if (isPointInQuad(imgPt, state.quads[i].points)) {
+            hitQuad = state.quads[i];
+            break;
+          }
+        }
+      }
+
+      if (hitQuad) {
+        openQuadContextMenu(e.clientX, e.clientY, hitQuad);
+      } else {
+        openGlobalContextMenu(e.clientX, e.clientY);
+      }
+    });
+
+    // Position Context Menu with Intrinsic Layout Measurement
+    function positionAndShowMenu(menuElem, clientX, clientY) {
+      closeAllContextMenus();
+
+      // Reset top/left/maxHeight so layout engine calculates unconstrained intrinsic size
+      menuElem.style.top = '0px';
+      menuElem.style.left = '0px';
+      menuElem.style.maxHeight = 'none';
+      menuElem.style.visibility = 'hidden';
+      menuElem.style.display = 'flex';
+      menuElem.classList.add('active');
+
+      // Query true unclipped intrinsic width & height
+      const menuWidth = menuElem.offsetWidth || 280;
+      const menuHeight = menuElem.offsetHeight || 320;
+
+      // Restore CSS max-height constraint
+      menuElem.style.maxHeight = 'calc(100vh - 20px)';
+
+      // Calculate safe target X coordinate
+      let posX = clientX;
+      if (posX + menuWidth > window.innerWidth - 10) {
+        posX = window.innerWidth - menuWidth - 10;
+      }
+      posX = Math.max(10, posX);
+
+      // Calculate safe target Y coordinate
+      let posY = clientY;
+      if (posY + menuHeight > window.innerHeight - 10) {
+        posY = window.innerHeight - menuHeight - 10;
+      }
+      posY = Math.max(10, posY);
+
+      menuElem.style.left = `${posX}px`;
+      menuElem.style.top = `${posY}px`;
+      menuElem.style.visibility = 'visible';
+    }
+
+    function openQuadContextMenu(x, y, quad) {
+      if (!quad) return;
+
+      if (!quad.analysisResult) {
+        updateQuadAnalysis(quad);
+      }
+
+      const res = quad.analysisResult;
+      const analysis = res.analysis;
+
+      const pCtx = menuPreviewCanvas.getContext('2d');
+      pCtx.imageSmoothingEnabled = false;
+      pCtx.clearRect(0, 0, 80, 80);
+      pCtx.drawImage(res.canvas, 0, 0, 80, 80);
+
+      drawNorthArrowOverlay(menuPreviewCanvas, analysis.angle);
+
+      menuOrientationBadge.textContent = `🧭 ${analysis.bestOrientation}`;
+      menuConfidenceBadge.innerHTML = `Confidence: <strong>${analysis.confidence}%</strong> (Facing ${analysis.facing})`;
+
+      menuScoresGrid.innerHTML = analysis.scores.map(s => `
+        <div class="score-item ${s.name === analysis.bestOrientation ? 'active' : ''}">
+          <span>${s.code}:</span>
+          <span>${(s.corr * 100).toFixed(1)}%</span>
+        </div>
+      `).join('');
+
+      positionAndShowMenu(quadContextMenu, x, y);
+      
+      // Preserve contextQuadId after menu opens!
+      state.contextQuadId = quad.id;
+    }
+
+    function openGlobalContextMenu(x, y) {
+      positionAndShowMenu(globalContextMenu, x, y);
+      state.contextQuadId = null;
+    }
+
+    function closeAllContextMenus() {
+      quadContextMenu.classList.remove('active');
+      quadContextMenu.style.display = 'none';
+      globalContextMenu.classList.remove('active');
+      globalContextMenu.style.display = 'none';
+    }
+
+    menuDownload.addEventListener('click', () => {
+      if (!state.contextQuadId) return;
+      const quad = state.quads.find(q => q.id === state.contextQuadId);
+      if (quad && quad.analysisResult) {
+        const link = document.createElement('a');
+        link.download = `grass_block_16x16_${quad.id}.png`;
+        link.href = quad.analysisResult.dataUrl;
+        link.click();
+      }
+      closeAllContextMenus();
+    });
+
+    menuCopy.addEventListener('click', () => {
+      if (!state.contextQuadId) return;
+      const quad = state.quads.find(q => q.id === state.contextQuadId);
+      if (quad) {
+        const cx = (quad.points[0].x + quad.points[1].x + quad.points[2].x + quad.points[3].x) / 4;
+        const cy = (quad.points[0].y + quad.points[1].y + quad.points[2].y + quad.points[3].y) / 4;
+
+        state.copyingQuad = {
+          points: JSON.parse(JSON.stringify(quad.points)),
+          anchor: { x: cx, y: cy }
+        };
+        updateStatus('Duplicating: Click on image to drop duplicate shape');
+      }
+      closeAllContextMenus();
+      requestAnimationFrame(render);
+    });
+
+    menuRemove.addEventListener('click', () => {
+      if (!state.contextQuadId) return;
+      state.quads = state.quads.filter(q => q.id !== state.contextQuadId);
+      updateStatus('Quadrilateral removed');
+      closeAllContextMenus();
+      saveStateToStorage();
+      requestAnimationFrame(render);
+    });
+
+    function updateStatus(msg) {
+      statusBadge.textContent = msg;
+    }
+
+    // --- Main Rendering Loop ---
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (!state.imageLoaded || !state.image) return;
+
+      ctx.save();
+      ctx.translate(state.panX, state.panY);
+      ctx.scale(state.scale, state.scale);
+
+      // 1. Draw Image
+      ctx.drawImage(state.image, 0, 0);
+
+      // 2. Draw Quadrilaterals
+      state.quads.forEach((quad) => {
+        drawQuadrilateralAndGrid(quad, '#ef4444', 0.9);
+      });
+
+      // 3. Draw Draft Creation State
+      if (state.currentPoints.length > 0) {
+        ctx.strokeStyle = '#3b82f6';
+        ctx.fillStyle = '#3b82f6';
+        ctx.lineWidth = 2 / state.scale;
+
+        state.currentPoints.forEach((pt, idx) => {
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 5 / state.scale, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.font = `${12 / state.scale}px sans-serif`;
+          ctx.fillText(`P${idx + 1}`, pt.x + 8 / state.scale, pt.y - 8 / state.scale);
+        });
+
+        if (state.currentPoints.length >= 2) {
+          ctx.beginPath();
+          ctx.moveTo(state.currentPoints[0].x, state.currentPoints[0].y);
+          ctx.lineTo(state.currentPoints[1].x, state.currentPoints[1].y);
+          ctx.stroke();
+        }
+
+        if (state.currentPoints.length === 3) {
+          ctx.beginPath();
+          ctx.moveTo(state.currentPoints[1].x, state.currentPoints[1].y);
+          ctx.lineTo(state.currentPoints[2].x, state.currentPoints[2].y);
+          ctx.lineTo(state.currentPoints[0].x, state.currentPoints[0].y);
+          ctx.stroke();
+
+          ctx.setLineDash([4 / state.scale, 4 / state.scale]);
+          ctx.strokeStyle = '#fbbf24';
+          ctx.beginPath();
+          ctx.moveTo(state.currentPoints[2].x, state.currentPoints[2].y);
+          ctx.lineTo(state.mouseImgPos.x, state.mouseImgPos.y);
+          ctx.lineTo(state.currentPoints[0].x, state.currentPoints[0].y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          const previewPts = sortQuadPoints([...state.currentPoints, state.mouseImgPos]);
+          drawQuadrilateralAndGrid({ points: previewPts }, 'rgba(251, 191, 36, 0.7)', 0.6);
+        }
+      }
+
+      // 4. Draw Duplicated Shape moving with mouse
+      if (state.copyingQuad) {
+        const offsetPts = state.copyingQuad.points.map(p => ({
+          x: p.x + (state.mouseImgPos.x - state.copyingQuad.anchor.x),
+          y: p.y + (state.mouseImgPos.y - state.copyingQuad.anchor.y)
+        }));
+
+        const previewPts = sortQuadPoints(offsetPts);
+        drawQuadrilateralAndGrid({ points: previewPts }, '#10b981', 0.9);
+      }
+
+      ctx.restore();
+    }
+
+    // Render Quad, 16x16 Grid & North Compass Indicator directly on canvas
+    function drawQuadrilateralAndGrid(quad, color, alpha) {
+      const quadPts = quad.points;
+      if (!quadPts || quadPts.length !== 4) return;
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+
+      // Tint inside quad
+      ctx.beginPath();
+      ctx.moveTo(quadPts[0].x, quadPts[0].y);
+      ctx.lineTo(quadPts[1].x, quadPts[1].y);
+      ctx.lineTo(quadPts[2].x, quadPts[2].y);
+      ctx.lineTo(quadPts[3].x, quadPts[3].y);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.08)';
+      ctx.fill();
+
+      // Outer quad border
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2 / state.scale;
+      ctx.stroke();
+
+      // 16x16 Grid Lines using Homography / Bilinear
+      ctx.lineWidth = 1 / state.scale;
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = alpha * 0.45;
+
+      // Vertical lines (i = 1 .. 15)
+      for (let i = 1; i < 16; i++) {
+        const u = i / 16;
+        const pTop = evaluateQuadPoint(quadPts, u, 0);
+        const pBottom = evaluateQuadPoint(quadPts, u, 1);
+
+        ctx.beginPath();
+        ctx.moveTo(pTop.x, pTop.y);
+        ctx.lineTo(pBottom.x, pBottom.y);
+        ctx.stroke();
+      }
+
+      // Horizontal lines (j = 1 .. 15)
+      for (let j = 1; j < 16; j++) {
+        const v = j / 16;
+        const pLeft = evaluateQuadPoint(quadPts, 0, v);
+        const pRight = evaluateQuadPoint(quadPts, 1, v);
+
+        ctx.beginPath();
+        ctx.moveTo(pLeft.x, pLeft.y);
+        ctx.lineTo(pRight.x, pRight.y);
+        ctx.stroke();
+      }
+
+      // Corner handles & points
+      ctx.globalAlpha = alpha;
+      quadPts.forEach((pt, idx) => {
+        const isHovered = state.hoveredHandle && quad.id && state.hoveredHandle.quadId === quad.id && state.hoveredHandle.pointIdx === idx;
+        const isDragged = state.draggedHandle && quad.id && state.draggedHandle.quadId === quad.id && state.draggedHandle.pointIdx === idx;
+
+        const radius = (isHovered || isDragged) ? 7 / state.scale : 4 / state.scale;
+        
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = (isHovered || isDragged) ? '#fbbf24' : color;
+        ctx.fill();
+
+        ctx.lineWidth = 1.5 / state.scale;
+        ctx.strokeStyle = '#ffffff';
+        ctx.stroke();
+      });
+
+      // Overlay North Compass Arrow directly on the Canvas Overlay using Quadrilateral Local Geometry!
+      if (quad.analysisResult && quad.analysisResult.analysis) {
+        const angle = quad.analysisResult.analysis.angle;
+        drawNorthArrowOnQuadCanvas(ctx, quadPts, angle);
+
+        // Label orientation badge near top-left vertex
+        const ori = quad.analysisResult.analysis.bestOrientation;
+        ctx.fillStyle = '#10b981';
+        ctx.font = `bold ${12 / state.scale}px sans-serif`;
+        ctx.fillText(`🧭 ${ori}`, quadPts[0].x, quadPts[0].y - 8 / state.scale);
+      }
+
+      ctx.restore();
+    }
+
+    // Initialize & restore session on startup
+    loadStateFromStorage();
+  </script>
+</body>
+</html>
