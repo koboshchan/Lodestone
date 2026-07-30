@@ -16,8 +16,12 @@
 /formation.txt
 /formation.json
 
-# Project exports from index.html
+# Project exports from the sampler UI
 /quadmatrix_project_*.json
+
+# Sampler UI: sources live in src/, the single-file build is generated (npm run build)
+/node_modules/
+/dist/
 
 # Python
 __pycache__/

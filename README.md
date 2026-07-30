@@ -12,7 +12,7 @@ Lodestone is a high-performance, GPU-accelerated coordinate solver for Minecraft
 - **Dynamic Shader Code Generation**: Unrolls search loops and embeds constant block offsets at compile-time to maximize GPU thread occupancy and instruction throughput.
 - **Differential Verification Suite**: Integrated `--verify` command that validates GPU kernels against standard reference models across 12 automated test cases.
 - **Schematic Parser**: Python utility (`parse_litematica.py`) for extracting block rotation matrices directly from `.litematic` schematics.
-- **Interactive Visual Sampler**: Browser-based Canvas UI (`index.html`) featuring 2D perspective quad warping and homography grid overlays to measure block orientations from screenshots.
+- **Interactive Visual Sampler**: Browser-based Canvas UI (TypeScript sources in `src/`, built to a single self-contained `dist/index.html`) featuring 2D perspective quad warping and homography grid overlays to measure block orientations from screenshots, plus a block-placement solver that recovers the block grid from a seamless screenshot.
 
 ---
 
@@ -66,9 +66,23 @@ python3 parse_litematica.py path/to/schematic.litematic -b lime_glazed_terracott
 This generates `formation.txt` and `formation.json`.
 
 #### Method B: Interactive Visual Sampler (Browser UI)
-1. Open [index.html](file:///Users/lucaszhang/Lodestone/index.html) in your browser.
+
+The sampler is a TypeScript project under `src/` that builds to a single self-contained
+HTML file — no server, no runtime dependencies, nothing fetched.
+
+```bash
+npm install
+npm run build
+```
+
+1. Open the generated `dist/index.html` in your browser.
 2. Load an in-game screenshot containing rotated blocks.
 3. Draw quadrilaterals around target block faces to measure rotation angles using the homography grid overlay.
+4. If the block edges aren't obvious in the screenshot, draw a rough box over 1–4 blocks
+   and right-click → **Calculate block placement**. It recovers the true block grid,
+   splits the selection into one aligned quad per block, and overlays the edges.
+
+For development, `npm run dev` rebuilds on change and serves the result over HTTP.
 
 ### 4. Run Coordinate Search
 

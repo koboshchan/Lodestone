@@ -1,0 +1,284 @@
+    :root {
+      --bg: #101010;
+      --panel: #1a1a1a;
+      --line: #303030;
+      --text: #e8e8e8;
+      --muted: #888888;
+      --sel: #2b2b2b;
+      --danger: #a33;
+      --font-sans: ui-sans-serif, -apple-system, "Helvetica Neue", Arial, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      font-size: 13px;
+      background-color: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
+      display: flex;
+    }
+
+    .app-body {
+      flex: 1;
+      display: flex;
+      position: relative;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    .viewport-container {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      position: relative;
+      background-color: var(--bg);
+      background-image:
+        radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+      background-size: 24px 24px;
+      overflow: hidden;
+      cursor: crosshair;
+    }
+
+    .viewport-container.panning {
+      cursor: grab !important;
+    }
+
+    .viewport-container.panning:active {
+      cursor: grabbing !important;
+    }
+
+    .viewport-container.dragging-handle {
+      cursor: move !important;
+    }
+
+    canvas#mainCanvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .upload-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+      z-index: 5;
+    }
+
+    .upload-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .upload-box {
+      padding: 24px 32px;
+      text-align: center;
+      cursor: pointer;
+      color: var(--muted);
+    }
+
+    .upload-box h3 {
+      font-size: 13px;
+      font-weight: 400;
+      color: var(--text);
+    }
+
+    .upload-box.dragover h3 {
+      text-decoration: underline;
+    }
+
+    /* Status strip, flush to the bottom edge */
+    .status-bar {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--panel);
+      border-top: 1px solid var(--line);
+      padding: 6px 12px;
+      font-size: 12px;
+      display: flex;
+      align-items: baseline;
+      gap: 14px;
+      /* Above the empty-state overlay, which is opaque and would otherwise hide it. */
+      z-index: 6;
+    }
+
+    .status-badge {
+      color: var(--text);
+    }
+
+    .shortcut-hint {
+      color: var(--muted);
+      margin-left: auto;
+    }
+
+    /* Hidden inputs */
+    input[type="file"] {
+      display: none;
+    }
+
+    /* Context menus. Clamped inside the window by positionAndShowMenu(). */
+    .context-menu {
+      position: fixed;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 2px;
+      padding: 6px;
+      width: 240px;
+      max-height: calc(100vh - 20px);
+      overflow-y: auto;
+      z-index: 100;
+      display: none;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .context-menu.active {
+      display: flex;
+    }
+
+    .context-menu-title {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 4px 6px 6px;
+    }
+
+    .context-header {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 2px 6px 8px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 4px;
+    }
+
+    .pixel-canvas-wrap {
+      width: 64px;
+      height: 64px;
+      background: #000;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .pixel-canvas-wrap canvas {
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    .context-meta {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .context-title {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .orientation-badge {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .confidence-badge {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+    }
+
+    .scores-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2px 12px;
+      padding: 2px 6px 6px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+    }
+
+    .score-item {
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+    }
+
+    .score-item.active {
+      color: var(--text);
+    }
+
+    .menu-item {
+      padding: 5px 6px;
+      font-size: 13px;
+      color: var(--text);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .menu-item:hover {
+      background: var(--sel);
+    }
+
+    .menu-item.danger:hover {
+      color: var(--danger);
+    }
+
+    .menu-control-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 3px 6px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .menu-control-item select {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--line);
+      padding: 2px 4px;
+      border-radius: 2px;
+      font-family: inherit;
+      font-size: 12px;
+      width: 108px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .menu-divider {
+      height: 1px;
+      background: var(--line);
+      margin: 4px 0;
+    }
+
+    .menu-icon {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+      color: var(--muted);
+    }
