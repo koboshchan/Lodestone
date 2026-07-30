@@ -198,6 +198,31 @@ export function render(): void {
     drawQuadrilateralAndGrid({ points: previewPts }, 'rgba(255, 255, 255, 0.8)', 0.9);
   }
 
+  // 5. Snap target, last so it sits over everything it refers to.
+  drawSnapTarget();
+
+  ctx.restore();
+}
+
+// The corner Left Shift is currently armed to snap to. Without this there is no way to
+// tell whether the next click will land free or be pulled onto a corner.
+function drawSnapTarget(): void {
+  const t = state.snapTarget;
+  if (!t) return;
+
+  ctx.save();
+
+  ctx.strokeStyle = ACCENT;
+  ctx.lineWidth = 2 / state.scale;
+  ctx.beginPath();
+  ctx.arc(t.x, t.y, 9 / state.scale, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(t.x, t.y, 2.5 / state.scale, 0, Math.PI * 2);
+  ctx.fill();
+
   ctx.restore();
 }
 

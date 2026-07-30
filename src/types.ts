@@ -139,8 +139,14 @@ export interface AppState {
   panStartX: number;
   panStartY: number;
   isSpacePressed: boolean;
+  /** Left Shift held. Tracked in state because a mouse event's `shiftKey` cannot tell
+   *  the two Shift keys apart. */
+  isSnapKeyDown: boolean;
+  /** The existing corner a Shift-held click or drag would land on, or null. */
+  snapTarget: Point | null;
   quads: Quad[];
   currentPoints: Point[];
+  /** The true cursor position. Snapping does not move it — see `snapTarget`. */
   mouseImgPos: Point;
   copyingQuad: CopyingQuad | null;
   draggedHandle: HandleRef | null;

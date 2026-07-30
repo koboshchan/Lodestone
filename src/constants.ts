@@ -33,3 +33,9 @@ export const ACCENT = '#e0402c';
 // land somewhere the wheel would refuse to go.
 export const MIN_SCALE = 0.05;
 export const MAX_SCALE = 40;
+
+// How near an existing corner the cursor must be, on screen, for Left Shift to snap to
+// it. Screen space rather than image space so the feel does not change with zoom.
+// Roughly twice the 12px handle-grab radius: arming a snap should be easier than
+// hitting a handle, and the gap leaves room to place a free point with Shift held.
+export const SNAP_RADIUS_PX = 25;

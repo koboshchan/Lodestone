@@ -17,6 +17,8 @@ export const state: AppState = {
   panStartX: 0,
   panStartY: 0,
   isSpacePressed: false,
+  isSnapKeyDown: false,
+  snapTarget: null,
   quads: [],
   currentPoints: [],
   mouseImgPos: { x: 0, y: 0 },

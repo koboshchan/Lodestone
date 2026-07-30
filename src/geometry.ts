@@ -134,6 +134,36 @@ export function isPassThrough(e: MouseEvent | KeyboardEvent): boolean {
   return IS_MAC ? e.metaKey : e.ctrlKey;
 }
 
+/**
+ * The corner of a committed quad nearest a screen position, for Shift-snapping.
+ *
+ * Two deliberate differences from `findCornerHandleNearScreen`, which is about grabbing:
+ * this returns the *nearest* corner rather than the first hit of a top-down scan, and it
+ * returns a copy. The copy matters — handing back the stored object would let two quads
+ * share one `Point` and move together.
+ *
+ * `state.currentPoints` is not in `state.quads`, so a shape being drawn cannot snap to
+ * its own corners, which is what "pre-existing" should mean.
+ */
+export function findNearestCornerScreen(
+  screenX: number, screenY: number, maxDistPx: number, excludeQuadId?: number
+): Point | null {
+  let best: Point | null = null;
+  let bestDist = maxDistPx;
+  for (const q of state.quads) {
+    if (q.id === excludeQuadId) continue;
+    for (const p of q.points) {
+      const s = imageToScreen(p.x, p.y);
+      const dist = Math.hypot(screenX - s.x, screenY - s.y);
+      if (dist <= bestDist) {
+        bestDist = dist;
+        best = p;
+      }
+    }
+  }
+  return best ? { x: best.x, y: best.y } : null;
+}
+
 export function findCornerHandleNearScreen(
   screenX: number, screenY: number, maxDistPx = 12
 ): HandleRef | null {

@@ -1,4 +1,4 @@
-import { IS_MAC, MAX_SCALE, MIN_SCALE } from './constants.js';
+import { IS_MAC, MAX_SCALE, MIN_SCALE, SNAP_RADIUS_PX } from './constants.js';
 import {
   canvas, globalClearShapes, globalExportJson, globalImportJsonLabel, globalLoadImgLabel,
   globalResetView, gridModeSelect, northGuideSelect, viewport
@@ -6,8 +6,8 @@ import {
 import { state } from './state.js';
 import { updateStatus } from './status.js';
 import {
-  findCornerHandleNearScreen, imageToScreen, isPassThrough, isPointInQuad,
-  screenToImage, sortQuadPoints
+  findCornerHandleNearScreen, findNearestCornerScreen, imageToScreen, isPassThrough,
+  isPointInQuad, screenToImage, sortQuadPoints
 } from './geometry.js';
 import { updateQuadAnalysis } from './orientation.js';
 import { exportProjectJSON, saveStateToStorage } from './persistence.js';
@@ -15,7 +15,7 @@ import { resetView } from './image.js';
 import { runHistoryStep } from './history.js';
 import { closeAllContextMenus, openGlobalContextMenu, openQuadContextMenu } from './menu.js';
 import { render } from './render.js';
-import type { GridMode, Quad } from './types.js';
+import type { GridMode, Point, Quad } from './types.js';
 
 // Taking or releasing the modifier changes what a click will do, so the hover
 // affordance has to update even if the pointer never moves.
@@ -30,6 +30,32 @@ function refreshHoverState(passThrough: boolean): void {
   state.hoveredHandle = hit;
   viewport.style.cursor = hit ? 'pointer' : 'crosshair';
   if (changed) requestAnimationFrame(render);
+}
+
+// Which corner, if any, Left Shift would pull the point onto. Recomputed on pointer
+// movement and on the Shift key itself, since pressing Shift without moving the mouse
+// still changes what a click will do — the same reason refreshHoverState exists.
+function refreshSnapTarget(): void {
+  let next: Point | null = null;
+
+  if (state.isSnapKeyDown && state.imageLoaded) {
+    const scr = imageToScreen(state.mouseImgPos.x, state.mouseImgPos.y);
+    // A corner must not snap onto another corner of its own quad: that collapses the
+    // quad into a degenerate shape with no usable homography.
+    const exclude = state.draggedHandle ? state.draggedHandle.quadId : undefined;
+    next = findNearestCornerScreen(scr.x, scr.y, SNAP_RADIUS_PX, exclude);
+  }
+
+  const prev = state.snapTarget;
+  const changed = (!prev !== !next) || (!!prev && !!next && (prev.x !== next.x || prev.y !== next.y));
+  state.snapTarget = next;
+  if (changed) requestAnimationFrame(render);
+}
+
+// Where a placed or dragged point actually goes. state.mouseImgPos stays the honest
+// cursor position; only this is snapped.
+function placementPoint(): Point {
+  return { ...(state.snapTarget ?? state.mouseImgPos) };
 }
 
 function registerControlListeners(): void {
@@ -102,6 +128,13 @@ export function registerInteractionListeners(): void {
       state.isSpacePressed = true;
       viewport.classList.add('panning');
     }
+    // ShiftLeft rather than e.shiftKey: the two Shift keys are indistinguishable on a
+    // mouse event, so the state has to be tracked here — as Space already is.
+    if (e.code === 'ShiftLeft' && !state.isSnapKeyDown) {
+      state.isSnapKeyDown = true;
+      refreshSnapTarget();
+      refreshHoverState(true);
+    }
     if (e.key === (IS_MAC ? 'Meta' : 'Control')) refreshHoverState(true);
   });
 
@@ -111,7 +144,22 @@ export function registerInteractionListeners(): void {
       state.isPanning = false;
       viewport.classList.remove('panning');
     }
+    if (e.code === 'ShiftLeft') {
+      state.isSnapKeyDown = false;
+      refreshSnapTarget();
+      refreshHoverState(false);
+    }
     if (e.key === (IS_MAC ? 'Meta' : 'Control')) refreshHoverState(false);
+  });
+
+  // A key held while the window loses focus never delivers its keyup, which would latch
+  // the modifier on until it is pressed and released again.
+  window.addEventListener('blur', () => {
+    state.isSnapKeyDown = false;
+    state.isSpacePressed = false;
+    state.isPanning = false;
+    viewport.classList.remove('panning');
+    refreshSnapTarget();
   });
 
   viewport.addEventListener('mousemove', (e) => {
@@ -120,12 +168,13 @@ export function registerInteractionListeners(): void {
     const mouseY = e.clientY - rect.top;
 
     state.mouseImgPos = screenToImage(mouseX, mouseY);
+    refreshSnapTarget();      // before the drag, so the drag lands on the snapped point
 
     const dragged = state.draggedHandle;
     if (dragged) {
       const quad = state.quads.find(q => q.id === dragged.quadId);
       if (quad) {
-        quad.points[dragged.pointIdx] = { ...state.mouseImgPos };
+        quad.points[dragged.pointIdx] = placementPoint();
         requestAnimationFrame(render);
       }
       return;
@@ -139,7 +188,8 @@ export function registerInteractionListeners(): void {
     }
 
     const wasHovering = !!state.hoveredHandle;
-    const handleHit = isPassThrough(e) ? null : findCornerHandleNearScreen(mouseX, mouseY);
+    const handleHit = (isPassThrough(e) || state.isSnapKeyDown)
+      ? null : findCornerHandleNearScreen(mouseX, mouseY);
     if (handleHit) {
       state.hoveredHandle = handleHit;
       viewport.style.cursor = 'pointer';
@@ -191,8 +241,12 @@ export function registerInteractionListeners(): void {
 
     if (e.button === 0 && state.imageLoaded) {
       // Holding cmd/ctrl passes through existing corner handles so a point can be
-      // placed on top of one instead of grabbing it.
-      const handleHit = isPassThrough(e) ? null : findCornerHandleNearScreen(mouseX, mouseY);
+      // placed on top of one instead of grabbing it. Left Shift has to pass through for
+      // the same reason: snapping a new point onto an existing corner is the whole
+      // point, and grabbing that corner instead would make it unreachable. A drag can
+      // still snap — grab the handle first, then hold Shift while moving.
+      const handleHit = (isPassThrough(e) || state.isSnapKeyDown)
+        ? null : findCornerHandleNearScreen(mouseX, mouseY);
       if (handleHit) {
         state.draggedHandle = handleHit;
         viewport.classList.add('dragging-handle');
@@ -200,7 +254,11 @@ export function registerInteractionListeners(): void {
         return;
       }
 
-      const imgPt = screenToImage(mouseX, mouseY);
+      // Recomputed here rather than trusting the last mousemove: a click can arrive
+      // without one, and the placement must agree with the highlighted target.
+      state.mouseImgPos = screenToImage(mouseX, mouseY);
+      refreshSnapTarget();
+      const imgPt = placementPoint();
 
       const copying = state.copyingQuad;
       if (copying) {
