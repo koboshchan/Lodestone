@@ -74,8 +74,16 @@ This generates `formation.txt` and `formation.json`.
 
 With `formation.txt` placed in the project root directory:
 ```bash
+# Default search (assumes North orientation)
 ./metal_solver
+
+# Search with explicit rotation direction (north, east, south, west)
+./metal_solver --rotate east -200 200 60 128 -200 200
+
+# Search all 4 cardinal rotations sequentially when orientation is unknown
+./metal_solver --rotate unknown -6000 6000 60 256 -6000 6000
 ```
+
 
 ---
 

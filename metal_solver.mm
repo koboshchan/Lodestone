@@ -325,22 +325,65 @@ static bool runSearch(id<MTLDevice> device,
 }
 
 static void printHelp(const char* prog) {
-    std::cout << "Usage: " << prog << " [x_min x_max y_min y_max z_min z_max]\n\n"
+    std::cout << "Usage: " << prog << " [--rotate <direction>] [x_min x_max y_min y_max z_min z_max]\n\n"
               << "Arguments:\n"
               << "  x_min x_max  Search bounds for X coordinates (default: -6000 6000)\n"
               << "  y_min y_max  Search bounds for Y coordinates (default: 60 256)\n"
               << "  z_min z_max  Search bounds for Z coordinates (default: -6000 6000)\n\n"
               << "Options:\n"
-              << "  -h, --help   Show this help\n\n"
+              << "  --rotate <dir>  Cardinal direction for North (north, east, south, west, unknown)\n"
+              << "                  If 'unknown', searches all 4 cardinal rotations sequentially.\n"
+              << "                  (default: north)\n"
+              << "  -h, --help      Show this help\n\n"
               << "Environment:\n"
               << "  LODESTONE_TG_H   Threadgroup height for tuning (default 8)\n\n"
               << "Example:\n"
-              << "  " << prog << " -200 200 60 128 -200 200\n"
-              << "  " << prog << " -6000 6000 60 256 -6000 6000\n";
+              << "  " << prog << " --rotate east -200 200 60 128 -200 200\n"
+              << "  " << prog << " --rotate unknown -6000 6000 60 256 -6000 6000\n";
+}
+
+struct CmdArgs {
+    RotateDir rotate = RotateDir::NORTH;
+    int x_min = -6000;
+    int x_max = 6000;
+    int y_min = 60;
+    int y_max = 256;
+    int z_min = -6000;
+    int z_max = 6000;
+    bool showHelp = false;
+};
+
+static CmdArgs parseArgs(int argc, char* argv[]) {
+    CmdArgs args;
+    std::vector<std::string> positionals;
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            args.showHelp = true;
+        } else if (arg == "--rotate" || arg == "-r") {
+            if (i + 1 < argc) {
+                args.rotate = parseRotateDir(argv[++i]);
+            }
+        } else if (arg.rfind("--rotate=", 0) == 0) {
+            args.rotate = parseRotateDir(arg.substr(9));
+        } else {
+            positionals.push_back(arg);
+        }
+    }
+
+    if (positionals.size() >= 1) args.x_min = atoi(positionals[0].c_str());
+    if (positionals.size() >= 2) args.x_max = atoi(positionals[1].c_str());
+    if (positionals.size() >= 3) args.y_min = atoi(positionals[2].c_str());
+    if (positionals.size() >= 4) args.y_max = atoi(positionals[3].c_str());
+    if (positionals.size() >= 5) args.z_min = atoi(positionals[4].c_str());
+    if (positionals.size() >= 6) args.z_max = atoi(positionals[5].c_str());
+
+    return args;
 }
 
 int main(int argc, char* argv[]) {
-    if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
+    CmdArgs args = parseArgs(argc, argv);
+    if (args.showHelp) {
         printHelp(argv[0]);
         return 0;
     }
@@ -354,43 +397,76 @@ int main(int argc, char* argv[]) {
         std::cout << "Using Metal GPU Device: " << [[device name] UTF8String] << std::endl;
         id<MTLCommandQueue> commandQueue = [device newCommandQueue];
 
-        std::vector<RotationInfo> formation = loadFormation();
-        orderByRejectionPower(formation);
+        std::vector<RotationInfo> baseFormation = loadFormation();
 
-        Uniforms uniforms = {
-            .x_min = (argc > 1) ? atoi(argv[1]) : -6000,
-            .x_max = (argc > 2) ? atoi(argv[2]) : 6000,
-            .y_min = (argc > 3) ? atoi(argv[3]) : 60,
-            .y_max = (argc > 4) ? atoi(argv[4]) : 256,
-            .z_min = (argc > 5) ? atoi(argv[5]) : -6000,
-            .z_max = (argc > 6) ? atoi(argv[6]) : 6000,
-            .num_blocks = (int)formation.size()
-        };
-
-        if (!validateBounds(uniforms, formation)) return 1;
-
-        id<MTLComputePipelineState> pso =
-            buildPipeline(device, generateOptimizedShader(formation, kDefaultMaxResults));
-        if (!pso) return 1;
-
-        std::vector<MatchResult> results;
-        int64_t count = 0;
-        double seconds = 0;
-        if (!runSearch(device, commandQueue, pso, uniforms, kDefaultMaxResults,
-                       blockZeroYOffset(formation), true, results, count, seconds)) {
-            return 1;
+        std::vector<RotateDir> dirsToSearch;
+        if (args.rotate == RotateDir::UNKNOWN) {
+            dirsToSearch = {RotateDir::NORTH, RotateDir::EAST, RotateDir::SOUTH, RotateDir::WEST};
+        } else {
+            dirsToSearch = {args.rotate};
         }
 
-        std::cout << "\nFound " << count << " match(es):" << std::endl;
-        for (const auto& r : results) {
-            std::cout << "X: " << r.x << " Y: " << r.y << " Z: " << r.z << std::endl;
-        }
-        if (count > kDefaultMaxResults) {
-            std::cout << "(only the first " << kDefaultMaxResults
-                      << " matches were recorded)" << std::endl;
+        int totalMatches = 0;
+        double totalSeconds = 0;
+
+        for (RotateDir dir : dirsToSearch) {
+            if (args.rotate == RotateDir::UNKNOWN) {
+                std::cout << "\n=== Searching Rotation: " << rotateDirName(dir) << " ===" << std::endl;
+            }
+
+            std::vector<RotationInfo> formation = rotateFormation(baseFormation, dir);
+            orderByRejectionPower(formation);
+
+            Uniforms uniforms = {
+                .x_min = args.x_min,
+                .x_max = args.x_max,
+                .y_min = args.y_min,
+                .y_max = args.y_max,
+                .z_min = args.z_min,
+                .z_max = args.z_max,
+                .num_blocks = (int)formation.size()
+            };
+
+            if (!validateBounds(uniforms, formation)) continue;
+
+            id<MTLComputePipelineState> pso =
+                buildPipeline(device, generateOptimizedShader(formation, kDefaultMaxResults));
+            if (!pso) return 1;
+
+            std::vector<MatchResult> results;
+            int64_t count = 0;
+            double seconds = 0;
+            if (!runSearch(device, commandQueue, pso, uniforms, kDefaultMaxResults,
+                           blockZeroYOffset(formation), true, results, count, seconds)) {
+                return 1;
+            }
+
+            totalSeconds += seconds;
+            totalMatches += (int)count;
+
+            if (args.rotate == RotateDir::UNKNOWN) {
+                std::cout << "Found " << count << " match(es) for rotation [" << rotateDirName(dir) << "]:" << std::endl;
+            } else {
+                std::cout << "\nFound " << count << " match(es):" << std::endl;
+            }
+
+            for (const auto& r : results) {
+                std::cout << "X: " << r.x << " Y: " << r.y << " Z: " << r.z << std::endl;
+            }
+            if (count > kDefaultMaxResults) {
+                std::cout << "(only the first " << kDefaultMaxResults
+                          << " matches were recorded)" << std::endl;
+            }
+
+            if (args.rotate != RotateDir::UNKNOWN) {
+                std::cout << "\nMetal GPU execution time: " << seconds << " seconds" << std::endl;
+            }
         }
 
-        std::cout << "\nMetal GPU execution time: " << seconds << " seconds" << std::endl;
+        if (args.rotate == RotateDir::UNKNOWN) {
+            std::cout << "\nTotal execution time across all 4 rotations: " << totalSeconds << " seconds" << std::endl;
+        }
     }
     return 0;
 }
+

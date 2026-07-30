@@ -252,19 +252,61 @@ static bool runSearch(CUfunction function, Uniforms bounds,
 
 static void printHelp(const char* prog) {
     std::cout
-        << "Usage: " << prog << " [x_min x_max y_min y_max z_min z_max]\n\n"
+        << "Usage: " << prog << " [--rotate <direction>] [x_min x_max y_min y_max z_min z_max]\n\n"
         << "Arguments:\n"
         << "  x_min x_max  Search bounds for X coordinates (default: -6000 6000)\n"
         << "  y_min y_max  Search bounds for Y coordinates (default: 60 256)\n"
         << "  z_min z_max  Search bounds for Z coordinates (default: -6000 6000)\n\n"
         << "Options:\n"
-        << "  -h, --help   Show this help\n\n"
+        << "  --rotate <dir>  Cardinal direction for North (north, east, south, west, unknown)\n"
+        << "                  If 'unknown', searches all 4 cardinal rotations sequentially.\n"
+        << "                  (default: north)\n"
+        << "  -h, --help      Show this help\n\n"
         << "Environment:\n"
         << "  LODESTONE_DEVICE   CUDA device index (default 0)\n"
         << "  LODESTONE_BX/BY    Thread block dimensions for tuning (default 64 x 4)\n\n"
         << "Example:\n"
-        << "  " << prog << " -200 200 60 128 -200 200\n"
-        << "  " << prog << " -6000 6000 60 256 -6000 6000\n";
+        << "  " << prog << " --rotate east -200 200 60 128 -200 200\n"
+        << "  " << prog << " --rotate unknown -6000 6000 60 256 -6000 6000\n";
+}
+
+struct CmdArgs {
+    RotateDir rotate = RotateDir::NORTH;
+    int x_min = -6000;
+    int x_max = 6000;
+    int y_min = 60;
+    int y_max = 256;
+    int z_min = -6000;
+    int z_max = 6000;
+    bool showHelp = false;
+};
+
+static CmdArgs parseArgs(int argc, char* argv[]) {
+    CmdArgs args;
+    std::vector<std::string> positionals;
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            args.showHelp = true;
+        } else if (arg == "--rotate" || arg == "-r") {
+            if (i + 1 < argc) {
+                args.rotate = parseRotateDir(argv[++i]);
+            }
+        } else if (arg.rfind("--rotate=", 0) == 0) {
+            args.rotate = parseRotateDir(arg.substr(9));
+        } else {
+            positionals.push_back(arg);
+        }
+    }
+
+    if (positionals.size() >= 1) args.x_min = atoi(positionals[0].c_str());
+    if (positionals.size() >= 2) args.x_max = atoi(positionals[1].c_str());
+    if (positionals.size() >= 3) args.y_min = atoi(positionals[2].c_str());
+    if (positionals.size() >= 4) args.y_max = atoi(positionals[3].c_str());
+    if (positionals.size() >= 5) args.z_min = atoi(positionals[4].c_str());
+    if (positionals.size() >= 6) args.z_max = atoi(positionals[5].c_str());
+
+    return args;
 }
 
 static bool initGpu(Gpu& gpu) {
@@ -300,7 +342,8 @@ static bool initGpu(Gpu& gpu) {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
+    CmdArgs args = parseArgs(argc, argv);
+    if (args.showHelp) {
         printHelp(argv[0]);
         return 0;
     }
@@ -310,41 +353,70 @@ int main(int argc, char* argv[]) {
     std::cout << "Using CUDA Device: " << gpu.name << " (sm_" << gpu.major << gpu.minor
               << ")" << std::endl;
 
-    std::vector<RotationInfo> formation = loadFormation();
-    orderByRejectionPower(formation);
+    std::vector<RotationInfo> baseFormation = loadFormation();
 
-    Uniforms uniforms;
-    uniforms.x_min = (argc > 1) ? atoi(argv[1]) : -6000;
-    uniforms.x_max = (argc > 2) ? atoi(argv[2]) : 6000;
-    uniforms.y_min = (argc > 3) ? atoi(argv[3]) : 60;
-    uniforms.y_max = (argc > 4) ? atoi(argv[4]) : 256;
-    uniforms.z_min = (argc > 5) ? atoi(argv[5]) : -6000;
-    uniforms.z_max = (argc > 6) ? atoi(argv[6]) : 6000;
-    uniforms.num_blocks = (int)formation.size();
-
-    if (!validateBounds(uniforms, formation)) {
-        cuCtxDestroy(gpu.context);
-        return 1;
+    std::vector<RotateDir> dirsToSearch;
+    if (args.rotate == RotateDir::UNKNOWN) {
+        dirsToSearch = {RotateDir::NORTH, RotateDir::EAST, RotateDir::SOUTH, RotateDir::WEST};
+    } else {
+        dirsToSearch = {args.rotate};
     }
 
-    CUmodule module = nullptr;
-    CUfunction function = nullptr;
-    const std::string src =
-        generateOptimizedKernel(formation, kDefaultMaxResults, kernelOptionsFromEnv());
-    if (!loadKernel(src, gpu, module, function)) {
-        cuCtxDestroy(gpu.context);
-        return 1;
-    }
+    int totalMatches = 0;
+    double totalSeconds = 0;
+    bool allOk = true;
 
-    std::vector<MatchResult> results;
-    int64_t count = 0;
-    double seconds = 0;
-    const bool ok =
-        runSearch(function, uniforms, kDefaultMaxResults,
-                  blockZeroYOffset(formation), true, results, count, seconds);
+    for (RotateDir dir : dirsToSearch) {
+        if (args.rotate == RotateDir::UNKNOWN) {
+            std::cout << "\n=== Searching Rotation: " << rotateDirName(dir) << " ===" << std::endl;
+        }
 
-    if (ok) {
-        std::cout << "\nFound " << count << " match(es):" << std::endl;
+        std::vector<RotationInfo> formation = rotateFormation(baseFormation, dir);
+        orderByRejectionPower(formation);
+
+        Uniforms uniforms;
+        uniforms.x_min = args.x_min;
+        uniforms.x_max = args.x_max;
+        uniforms.y_min = args.y_min;
+        uniforms.y_max = args.y_max;
+        uniforms.z_min = args.z_min;
+        uniforms.z_max = args.z_max;
+        uniforms.num_blocks = (int)formation.size();
+
+        if (!validateBounds(uniforms, formation)) continue;
+
+        CUmodule module = nullptr;
+        CUfunction function = nullptr;
+        const std::string src =
+            generateOptimizedKernel(formation, kDefaultMaxResults, kernelOptionsFromEnv());
+        if (!loadKernel(src, gpu, module, function)) {
+            allOk = false;
+            break;
+        }
+
+        std::vector<MatchResult> results;
+        int64_t count = 0;
+        double seconds = 0;
+        const bool ok =
+            runSearch(function, uniforms, kDefaultMaxResults,
+                      blockZeroYOffset(formation), true, results, count, seconds);
+
+        cuModuleUnload(module);
+
+        if (!ok) {
+            allOk = false;
+            break;
+        }
+
+        totalSeconds += seconds;
+        totalMatches += (int)count;
+
+        if (args.rotate == RotateDir::UNKNOWN) {
+            std::cout << "Found " << count << " match(es) for rotation [" << rotateDirName(dir) << "]:" << std::endl;
+        } else {
+            std::cout << "\nFound " << count << " match(es):" << std::endl;
+        }
+
         for (const auto& r : results) {
             std::cout << "X: " << r.x << " Y: " << r.y << " Z: " << r.z << std::endl;
         }
@@ -352,10 +424,17 @@ int main(int argc, char* argv[]) {
             std::cout << "(only the first " << kDefaultMaxResults
                       << " matches were recorded)" << std::endl;
         }
-        std::cout << "\nCUDA GPU execution time: " << seconds << " seconds" << std::endl;
+
+        if (args.rotate != RotateDir::UNKNOWN) {
+            std::cout << "\nCUDA GPU execution time: " << seconds << " seconds" << std::endl;
+        }
     }
 
-    cuModuleUnload(module);
+    if (args.rotate == RotateDir::UNKNOWN && allOk) {
+        std::cout << "\nTotal execution time across all 4 rotations: " << totalSeconds << " seconds" << std::endl;
+    }
+
     cuCtxDestroy(gpu.context);
-    return ok ? 0 : 1;
+    return allOk ? 0 : 1;
 }
+

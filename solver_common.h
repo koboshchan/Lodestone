@@ -108,6 +108,68 @@ inline void orderByRejectionPower(std::vector<RotationInfo>& f) {
                           [](const RotationInfo& b) { return b.is_side == 0; });
 }
 
+enum class RotateDir {
+    NORTH = 0,
+    EAST = 1,
+    SOUTH = 2,
+    WEST = 3,
+    UNKNOWN = 4
+};
+
+inline RotateDir parseRotateDir(const std::string& str) {
+    std::string s = str;
+    for (char& c : s) c = (char)::tolower(c);
+    if (s == "north") return RotateDir::NORTH;
+    if (s == "east") return RotateDir::EAST;
+    if (s == "south") return RotateDir::SOUTH;
+    if (s == "west") return RotateDir::WEST;
+    if (s == "unknown") return RotateDir::UNKNOWN;
+    return RotateDir::NORTH;
+}
+
+inline const char* rotateDirName(RotateDir dir) {
+    switch (dir) {
+        case RotateDir::NORTH: return "north";
+        case RotateDir::EAST: return "east";
+        case RotateDir::SOUTH: return "south";
+        case RotateDir::WEST: return "west";
+        case RotateDir::UNKNOWN: return "unknown";
+    }
+    return "north";
+}
+
+// Rotates a formation relative to North.
+// dir specifies which cardinal direction North is now mapped to:
+//   NORTH (0): 0 deg CW (no change)
+//   EAST (1): 90 deg CW (x' = -z, z' = x, rotation' = (rotation + 1) % mod)
+//   SOUTH (2): 180 deg CW (x' = -x, z' = -z, rotation' = (rotation + 2) % mod)
+//   WEST (3): 270 deg CW (x' = z, z' = -x, rotation' = (rotation + 3) % mod)
+inline std::vector<RotationInfo> rotateFormation(const std::vector<RotationInfo>& formation, RotateDir dir) {
+    if (dir == RotateDir::NORTH || dir == RotateDir::UNKNOWN) {
+        return formation;
+    }
+    std::vector<RotationInfo> result = formation;
+    int step = static_cast<int>(dir);
+    for (auto& b : result) {
+        int old_x = b.x;
+        int old_z = b.z;
+        if (dir == RotateDir::EAST) {
+            b.x = -old_z;
+            b.z = old_x;
+        } else if (dir == RotateDir::SOUTH) {
+            b.x = -old_x;
+            b.z = -old_z;
+        } else if (dir == RotateDir::WEST) {
+            b.x = old_z;
+            b.z = -old_x;
+        }
+        int mod_val = b.is_side ? 2 : 4;
+        b.rotation = (b.rotation + step) % mod_val;
+    }
+    return result;
+}
+
+
 // The kernel folds (z + b.z) into pz + b.z*kMulZ, which agrees with the vanilla
 // hash unless (z + b.z) overflows int32. Reject those bounds.
 inline bool validateBounds(const Uniforms& u, const std::vector<RotationInfo>& f) {
