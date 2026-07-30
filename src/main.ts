@@ -6,7 +6,8 @@
 // it would be wiring that breaks when an import moves.
 
 import { IS_MAC } from './constants.js';
-import { modKeyHint } from './dom.js';
+import { modKeyHint, undoShortcutHint, redoShortcutHint } from './dom.js';
+import { resetHistory } from './history.js';
 import { registerImageListeners } from './image.js';
 import { registerInteractionListeners } from './interactions.js';
 import { registerMenuListeners } from './menu.js';
@@ -18,6 +19,11 @@ registerInteractionListeners();
 registerMenuListeners();
 
 if (IS_MAC) modKeyHint.textContent = 'Cmd';
+undoShortcutHint.textContent = IS_MAC ? '⌘Z' : 'Ctrl+Z';
+redoShortcutHint.textContent = IS_MAC ? '⇧⌘Z' : 'Ctrl+Shift+Z';
 
 // Initialize & restore session on startup
 loadStateFromStorage();
+
+// The restored session is the baseline, not a state to be undone past.
+resetHistory();

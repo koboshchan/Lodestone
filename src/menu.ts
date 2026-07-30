@@ -1,8 +1,9 @@
 import {
-  globalContextMenu, menuConfidenceBadge, menuCopy, menuDownload, menuOrientationBadge,
-  menuPlacement, menuPreviewCanvas, menuRemove, menuScoresGrid, menuUndoPlacement,
-  quadContextMenu
+  globalContextMenu, globalRedo, globalUndo, menuConfidenceBadge, menuCopy, menuDownload,
+  menuOrientationBadge, menuPlacement, menuPreviewCanvas, menuRemove, menuScoresGrid,
+  menuUndoPlacement, quadContextMenu
 } from './dom.js';
+import { canRedo, canUndo, runHistoryStep } from './history.js';
 import { state } from './state.js';
 import { updateStatus } from './status.js';
 import { updateQuadAnalysis } from './orientation.js';
@@ -93,6 +94,8 @@ export function openQuadContextMenu(x: number, y: number, quad: Quad | undefined
 }
 
 export function openGlobalContextMenu(x: number, y: number): void {
+  globalUndo.classList.toggle('disabled', !canUndo());
+  globalRedo.classList.toggle('disabled', !canRedo());
   positionAndShowMenu(globalContextMenu, x, y);
   state.contextQuadId = null;
 }
@@ -105,6 +108,18 @@ export function closeAllContextMenus(): void {
 }
 
 export function registerMenuListeners(): void {
+  globalUndo.addEventListener('click', () => {
+    if (globalUndo.classList.contains('disabled')) return;
+    closeAllContextMenus();
+    runHistoryStep(false);
+  });
+
+  globalRedo.addEventListener('click', () => {
+    if (globalRedo.classList.contains('disabled')) return;
+    closeAllContextMenus();
+    runHistoryStep(true);
+  });
+
   menuPlacement.addEventListener('click', () => {
     if (!state.contextQuadId) return;
     const quad = state.quads.find(q => q.id === state.contextQuadId);

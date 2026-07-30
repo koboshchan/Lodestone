@@ -4,6 +4,7 @@ import { state } from './state.js';
 import { updateStatus } from './status.js';
 import { updateQuadAnalysis } from './orientation.js';
 import { resetView } from './image.js';
+import { commitHistory, resetHistory } from './history.js';
 import { render } from './render.js';
 import type { ProjectFile } from './types.js';
 
@@ -34,7 +35,12 @@ export function exportProjectJSON(): void {
 }
 
 // --- LocalStorage Persistence ---
+// Persisting and checkpointing undo are the same event. Every call site of this
+// function is a point where the document meaningfully changed — that is why they were
+// placed there — so hooking history here means a new mutation cannot be added without
+// also becoming undoable.
 export function saveStateToStorage(): void {
+  commitHistory();
   try {
     const payload = {
       gridMode: state.gridMode,
@@ -119,12 +125,14 @@ export function registerPersistenceListeners(): void {
             resetView();
             state.quads.forEach(q => updateQuadAnalysis(q));
             saveStateToStorage();
+            resetHistory();
             updateStatus('Imported');
           };
           img.src = data.imageDataUrl;
         } else {
           state.quads.forEach(q => updateQuadAnalysis(q));
           saveStateToStorage();
+          resetHistory();
           requestAnimationFrame(render);
           updateStatus('Imported shapes');
         }

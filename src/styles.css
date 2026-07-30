@@ -248,6 +248,22 @@
       color: var(--danger);
     }
 
+    .menu-item.disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+
+    .menu-item.disabled:hover {
+      background: transparent;
+    }
+
+    .menu-shortcut {
+      margin-left: auto;
+      padding-left: 16px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
     .menu-control-item {
       display: flex;
       align-items: center;

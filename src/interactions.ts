@@ -12,6 +12,7 @@ import {
 import { updateQuadAnalysis } from './orientation.js';
 import { exportProjectJSON, saveStateToStorage } from './persistence.js';
 import { resetView } from './image.js';
+import { runHistoryStep } from './history.js';
 import { closeAllContextMenus, openGlobalContextMenu, openQuadContextMenu } from './menu.js';
 import { render } from './render.js';
 import type { GridMode, Quad } from './types.js';
@@ -80,6 +81,23 @@ export function registerInteractionListeners(): void {
   registerControlListeners();
 
   window.addEventListener('keydown', (e) => {
+    // Matched on e.key rather than e.code so the shortcut follows the user's keyboard
+    // layout. With Shift held, e.key is the capital 'Z'.
+    const mod = IS_MAC ? e.metaKey : e.ctrlKey;
+    const key = e.key.toLowerCase();
+
+    if (mod && key === 'z') {
+      e.preventDefault();          // the browser has its own undo, and it is not ours
+      runHistoryStep(e.shiftKey);
+      return;
+    }
+    // The other conventional redo on Windows and Linux.
+    if (!IS_MAC && e.ctrlKey && key === 'y') {
+      e.preventDefault();
+      runHistoryStep(true);
+      return;
+    }
+
     if (e.code === 'Space' && !state.isSpacePressed) {
       state.isSpacePressed = true;
       viewport.classList.add('panning');

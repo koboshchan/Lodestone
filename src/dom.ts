@@ -36,6 +36,11 @@ export const menuDownload = el<HTMLDivElement>('menuDownload');
 export const menuCopy = el<HTMLDivElement>('menuCopy');
 export const menuRemove = el<HTMLDivElement>('menuRemove');
 
+export const globalUndo = el<HTMLDivElement>('globalUndo');
+export const globalRedo = el<HTMLDivElement>('globalRedo');
+export const undoShortcutHint = el<HTMLElement>('undoShortcutHint');
+export const redoShortcutHint = el<HTMLElement>('redoShortcutHint');
+
 export const gridModeSelect = el<HTMLSelectElement>('gridModeSelect');
 export const northGuideSelect = el<HTMLSelectElement>('northGuideSelect');
 export const globalExportJson = el<HTMLDivElement>('globalExportJson');

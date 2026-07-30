@@ -80,6 +80,20 @@
   <div class="context-menu" id="globalContextMenu">
     <div class="context-menu-title">Controls</div>
 
+    <div class="menu-item" id="globalUndo">
+      <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 14 4 9 9 4"></polyline><path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg>
+      Undo
+      <span class="menu-shortcut" id="undoShortcutHint">Ctrl+Z</span>
+    </div>
+
+    <div class="menu-item" id="globalRedo">
+      <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 14 20 9 15 4"></polyline><path d="M4 20v-7a4 4 0 0 1 4-4h12"></path></svg>
+      Redo
+      <span class="menu-shortcut" id="redoShortcutHint">Ctrl+Shift+Z</span>
+    </div>
+
+    <div class="menu-divider"></div>
+
     <label class="menu-item" for="fileInput" id="globalLoadImgLabel">
       <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
       Load Image

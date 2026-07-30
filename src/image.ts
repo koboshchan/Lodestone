@@ -3,6 +3,7 @@ import { canvas, fileInput, uploadBox, uploadOverlay, viewport } from './dom.js'
 import { state } from './state.js';
 import { updateStatus } from './status.js';
 import { saveStateToStorage } from './persistence.js';
+import { resetHistory } from './history.js';
 import { render } from './render.js';
 
 // --- Canvas Setup ---
@@ -31,6 +32,8 @@ export function loadImageFromFile(file: File | null | undefined): void {
       uploadOverlay.classList.add('hidden');
       resetView();
       saveStateToStorage();
+      // A new image is a new document — there is nothing behind it to walk back into.
+      resetHistory();
       updateStatus('Image loaded');
     };
     img.src = dataUrl;
