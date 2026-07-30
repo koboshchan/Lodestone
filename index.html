@@ -336,6 +336,16 @@
 
     <div class="menu-divider"></div>
 
+    <div class="menu-item" id="menuPlacement">
+      <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="3" y1="15" x2="21" y2="15"></line><line x1="9" y1="3" x2="9" y2="21"></line><line x1="15" y1="3" x2="15" y2="21"></line></svg>
+      Calculate block placement
+    </div>
+    <div class="menu-item" id="menuUndoPlacement">
+      <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 14 4 9 9 4"></polyline><path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg>
+      Undo placement
+    </div>
+    <div class="menu-divider"></div>
+
     <div class="menu-item" id="menuDownload">
       <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
       Download PNG
@@ -473,6 +483,8 @@
     const menuOrientationBadge = document.getElementById('menuOrientationBadge');
     const menuConfidenceBadge = document.getElementById('menuConfidenceBadge');
     const menuScoresGrid = document.getElementById('menuScoresGrid');
+    const menuPlacement = document.getElementById('menuPlacement');
+    const menuUndoPlacement = document.getElementById('menuUndoPlacement');
     const menuDownload = document.getElementById('menuDownload');
     const menuCopy = document.getElementById('menuCopy');
     const menuRemove = document.getElementById('menuRemove');
@@ -535,7 +547,8 @@
         imageDataUrl: state.imageDataUrl,
         quads: state.quads.map(q => ({
           id: q.id,
-          points: q.points
+          points: q.points,
+          placement: q.placement
         }))
       };
 
@@ -1032,6 +1045,498 @@
       };
     }
 
+    // --- Block Placement Solver ---
+    // A screenshot of a grass patch shows no seams, so the block grid has to be
+    // recovered rather than eyeballed. The top texture is a known 16x16 image at one
+    // of four rotations, which makes a candidate grid directly scorable: resample each
+    // cell to 16x16 and correlate it against the reference. Only the true grid makes
+    // every cell look like the reference.
+    //
+    // Unlike analyzeOrientation this correlates the *whole* tile rather than the
+    // centre 6x6. The centre is used there because it tolerates misalignment; here the
+    // misalignment is exactly what is being measured, and it shows up at the edges.
+
+    const TILE = 16;
+    const TILE_N = TILE * TILE;
+
+    // Below this mean correlation the fit is rejected rather than reported. A true
+    // alignment scores near 1, so this is not a tight bound - it is set well above the
+    // ~0.35 that unrelated noise can reach by chance over a single cell. Expect to land
+    // here when the screenshot has fewer than ~16 pixels per block: there is no texel
+    // detail left to match, and a wrong grid is worse than no grid.
+    const PLACEMENT_MIN_SCORE = 0.45;
+
+    // How far cell size may stray from "the selection bounds the blocks". Enough to
+    // absorb a roughly drawn box, not enough for a cell to shrink onto part of a block.
+    const PLACEMENT_SCALE_TOL = 0.25;
+
+    // Luminance of the loaded image, built once per image. A single solve reads a few
+    // hundred thousand pixels; re-uploading the image the way updateQuadAnalysis does
+    // would dominate the search.
+    let luminanceCache = { image: null, data: null, w: 0, h: 0 };
+    function getImageLuminance() {
+      if (luminanceCache.image === state.image) return luminanceCache;
+
+      const w = state.image.width;
+      const h = state.image.height;
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      const cx = c.getContext('2d');
+      cx.drawImage(state.image, 0, 0);
+      const src = cx.getImageData(0, 0, w, h).data;
+
+      const data = new Float32Array(w * h);
+      for (let i = 0, p = 0; i < data.length; i++, p += 4) {
+        data[i] = 0.299 * src[p] + 0.587 * src[p + 1] + 0.114 * src[p + 2];
+      }
+
+      luminanceCache = { image: state.image, data, w, h };
+      return luminanceCache;
+    }
+
+    // Comparison resolutions, coarse to fine. A cell is always sampled at 16x16 and
+    // then box-averaged down to the level's size. Averaging is what makes the search
+    // possible: at full resolution the objective is nearly a delta function - the
+    // texture is high-frequency noise, so one source pixel of drift takes the
+    // correlation from 1.0 to nothing, and there is no slope to follow. Each 2x
+    // reduction roughly doubles the basin of attraction.
+    const PLACEMENT_LEVELS = [4, 8, 16];
+
+    // Removes the mean and any linear gradient from an n x n tile, then scales it to
+    // unit deviation so scoring is a plain dot product. The gradient matters:
+    // Minecraft shades a top face with ambient occlusion, a smooth ramp across the
+    // block that the flat reference has no trace of. Left in, it swamps the texture
+    // detail the fit depends on. Returns false for a tile with no detail left, which
+    // cannot be matched.
+    function deplaneNormalize(tile, n) {
+      const mid = (n - 1) / 2;
+      // The sample grid is centred and symmetric, so sum(x) = sum(y) = sum(xy) = 0 and
+      // the least-squares normal equations collapse into three independent sums.
+      const gxx = n * n * (n * n - 1) / 12;   // sum over the tile of (c - mid)^2
+      let sum = 0, sumX = 0, sumY = 0;
+      for (let r = 0; r < n; r++) {
+        for (let c = 0; c < n; c++) {
+          const v = tile[r * n + c];
+          sum += v;
+          sumX += v * (c - mid);
+          sumY += v * (r - mid);
+        }
+      }
+      const mean = sum / (n * n);
+      const gx = sumX / gxx;
+      const gy = sumY / gxx;
+
+      let sq = 0;
+      for (let r = 0; r < n; r++) {
+        for (let c = 0; c < n; c++) {
+          const i = r * n + c;
+          const v = tile[i] - mean - gx * (c - mid) - gy * (r - mid);
+          tile[i] = v;
+          sq += v * v;
+        }
+      }
+
+      const sd = Math.sqrt(sq / (n * n));
+      if (sd < 1e-4) return false;
+      for (let i = 0; i < n * n; i++) tile[i] /= sd;
+      return true;
+    }
+
+    // Box-averages a 16x16 tile down to n x n in place-compatible fashion.
+    function reduceTile(tile, n, out) {
+      if (n === TILE) {
+        out.set(tile);
+        return;
+      }
+      const k = TILE / n;
+      const inv = 1 / (k * k);
+      for (let r = 0; r < n; r++) {
+        for (let c = 0; c < n; c++) {
+          let sum = 0;
+          for (let dr = 0; dr < k; dr++) {
+            const row = (r * k + dr) * TILE + c * k;
+            for (let dc = 0; dc < k; dc++) sum += tile[row + dc];
+          }
+          out[r * n + c] = sum * inv;
+        }
+      }
+    }
+
+    // The reference at each rotation, prepared once per level. Same index maths as
+    // getCenter6x6FromRef, over the full tile.
+    const REFERENCE_ROTATIONS = [0, 90, 180, 270].map(angle => {
+      const tile = new Float32Array(TILE_N);
+      for (let r = 0; r < TILE; r++) {
+        for (let c = 0; c < TILE; c++) {
+          let origR, origC;
+          if (angle === 0) {
+            origR = r; origC = c;
+          } else if (angle === 90) {
+            origR = 15 - c; origC = r;
+          } else if (angle === 180) {
+            origR = 15 - r; origC = 15 - c;
+          } else {
+            origR = c; origC = 15 - r;
+          }
+          tile[r * TILE + c] = REFERENCE_GRASS_BLOCK_TOP[origR][origC];
+        }
+      }
+      return tile;
+    });
+
+    const REFERENCE_LEVELS = PLACEMENT_LEVELS.map(n =>
+      REFERENCE_ROTATIONS.map(full => {
+        const tile = new Float32Array(n * n);
+        reduceTile(full, n, tile);
+        deplaneNormalize(tile, n);
+        return tile;
+      }));
+
+    // Scratch buffers, reused across the thousands of candidates a solve evaluates.
+    const placementTile = new Float32Array(TILE_N);
+    const placementReduced = new Float32Array(TILE_N);
+
+    // Resamples one lattice cell to a 16x16 luminance tile. False if the cell leaves
+    // the image, which rejects the candidate it belongs to.
+    function sampleCellTile(H, lum, u0, v0, su, sv, out) {
+      for (let r = 0; r < TILE; r++) {
+        const v = v0 + (r + 0.5) / TILE * sv;
+        for (let c = 0; c < TILE; c++) {
+          const u = u0 + (c + 0.5) / TILE * su;
+          const w = H.h20 * u + H.h21 * v + 1;
+          if (Math.abs(w) < 1e-9) return false;   // on the horizon of the frame
+          const px = Math.floor((H.h00 * u + H.h01 * v + H.h02) / w);
+          const py = Math.floor((H.h10 * u + H.h11 * v + H.h12) / w);
+          if (px < 0 || px >= lum.w || py < 0 || py >= lum.h) return false;
+          out[r * TILE + c] = lum.data[py * lum.w + px];
+        }
+      }
+      return true;
+    }
+
+    // Best correlation of a tile over the four rotations, at one level of the ladder.
+    // Writes the winning rotation index to lastTileRotation rather than allocating a
+    // result object per candidate.
+    let lastTileRotation = 0;
+    function scoreTile(tile, level) {
+      const n = PLACEMENT_LEVELS[level];
+      reduceTile(tile, n, placementReduced);
+      if (!deplaneNormalize(placementReduced, n)) return -1;
+
+      const refs = REFERENCE_LEVELS[level];
+      const count = n * n;
+      let best = -1;
+      for (let k = 0; k < 4; k++) {
+        const ref = refs[k];
+        let dot = 0;
+        for (let i = 0; i < count; i++) dot += placementReduced[i] * ref[i];
+        dot /= count;
+        if (dot > best) {
+          best = dot;
+          lastTileRotation = k;
+        }
+      }
+      return best;
+    }
+
+    // A candidate is the image-space quadrilateral that its nu x nv block region
+    // occupies, in the usual TL,TR,BR,BL order. Cell (iu,iv) is the sub-rectangle
+    // [iu/nu,(iu+1)/nu] x [iv/nv,(iv+1)/nv] of that quad's own unit square.
+    //
+    // The candidate carries its own corners rather than an offset and a size within the
+    // drawn selection's frame. It has to: the four points of a hand-drawn selection are
+    // each wrong by a different amount, so the true lattice sits at a full projective
+    // transform of the drawn frame, not a translation and a stretch of it.
+    function evaluateLattice(lum, lat, level, cellsOut) {
+      const H = computeHomography(lat.pts);
+      if (!H) return -1;
+      const su = 1 / lat.nu, sv = 1 / lat.nv;
+
+      let total = 0;
+      for (let iv = 0; iv < lat.nv; iv++) {
+        for (let iu = 0; iu < lat.nu; iu++) {
+          if (!sampleCellTile(H, lum, iu * su, iv * sv, su, sv, placementTile)) return -1;
+          const corr = scoreTile(placementTile, level);
+          if (corr < -0.5) return -1;
+          if (cellsOut) cellsOut.push({ iu, iv, corr, rotation: lastTileRotation });
+          total += corr;
+        }
+      }
+      return total / (lat.nu * lat.nv);
+    }
+
+    // Unit vectors along the candidate's own axes, so a step means the same thing
+    // whatever angle the selection sits at on screen.
+    function latticeAxes(pts) {
+      const ux = ((pts[1].x - pts[0].x) + (pts[2].x - pts[3].x)) / 2;
+      const uy = ((pts[1].y - pts[0].y) + (pts[2].y - pts[3].y)) / 2;
+      const vx = ((pts[3].x - pts[0].x) + (pts[2].x - pts[1].x)) / 2;
+      const vy = ((pts[3].y - pts[0].y) + (pts[2].y - pts[1].y)) / 2;
+      const ul = Math.hypot(ux, uy), vl = Math.hypot(vx, vy);
+      if (ul < 1e-6 || vl < 1e-6) return null;
+      return { ux: ux / ul, uy: uy / ul, vx: vx / vl, vy: vy / vl, ul, vl };
+    }
+
+    // Search directions over a candidate's corners. The whole-quad moves come first
+    // because they take out most of the error at once; the per-corner moves after them
+    // clean up the shape, which is the part a translation and a stretch cannot reach.
+    // Each entry is the axis to move along and a weight per corner.
+    const PLACEMENT_MODES = (() => {
+      const modes = [
+        { axis: 0, w: [1, 1, 1, 1] },      // translate along u
+        { axis: 1, w: [1, 1, 1, 1] },      // translate along v
+        { axis: 0, w: [-1, 1, 1, -1] },    // stretch along u
+        { axis: 1, w: [-1, -1, 1, 1] }     // stretch along v
+      ];
+      for (let i = 0; i < 4; i++) {
+        for (const axis of [0, 1]) {
+          const w = [0, 0, 0, 0];
+          w[i] = 1;
+          modes.push({ axis, w });
+        }
+      }
+      return modes;
+    })();
+
+    function latticeCentre(pts) {
+      return {
+        x: (pts[0].x + pts[1].x + pts[2].x + pts[3].x) / 4,
+        y: (pts[0].y + pts[1].y + pts[2].y + pts[3].y) / 4
+      };
+    }
+
+    // How far a candidate has walked from where the selection was drawn, in blocks.
+    function latticeDrift(lat) {
+      const c = latticeCentre(lat.pts);
+      return Math.hypot(c.x - lat.refCx, c.y - lat.refCy) /
+             ((lat.refCellU + lat.refCellV) / 2);
+    }
+
+    // Cell size and position must both stay near what the selection implies, or a
+    // candidate could walk off onto blocks the user never pointed at.
+    function latticePlausible(lat) {
+      const ax = latticeAxes(lat.pts);
+      if (!ax) return false;
+      const cu = ax.ul / lat.nu / lat.refCellU;
+      const cv = ax.vl / lat.nv / lat.refCellV;
+      return cu > 1 - PLACEMENT_SCALE_TOL && cu < 1 + PLACEMENT_SCALE_TOL &&
+             cv > 1 - PLACEMENT_SCALE_TOL && cv < 1 + PLACEMENT_SCALE_TOL &&
+             latticeDrift(lat) < 0.75;
+    }
+
+    // Ranking, as opposed to fit. The neighbouring blocks are real blocks too, so a
+    // lattice shifted one block over fits exactly as well as the right one and the
+    // choice between them is otherwise arbitrary. Break the tie towards where the
+    // selection was actually drawn, gently enough that a genuinely better fit still wins.
+    function placementRank(lat) {
+      const d = latticeDrift(lat);
+      return lat.score - 0.15 * d * d;
+    }
+
+    // Coordinate pattern search with a halving step, in pixels along the candidate's
+    // own axes.
+    function refineLattice(lum, lat, level, startFrac, passes) {
+      let best = Object.assign({}, lat);
+      best.score = evaluateLattice(lum, best, level, null);
+
+      const ax = latticeAxes(best.pts);
+      if (!ax) return best;
+      let step = startFrac * Math.min(ax.ul / best.nu, ax.vl / best.nv);
+
+      for (let pass = 0; pass < passes; pass++) {
+        // Sweep at this step size until it stops paying, so a corner can travel several
+        // steps in one pass rather than one step per halving.
+        for (let sweep = 0; sweep < 8; sweep++) {
+          let improved = false;
+          const axes = latticeAxes(best.pts);
+          if (!axes) break;
+
+          for (const mode of PLACEMENT_MODES) {
+            const dx = (mode.axis === 0 ? axes.ux : axes.vx) * step;
+            const dy = (mode.axis === 0 ? axes.uy : axes.vy) * step;
+
+            for (const dir of [1, -1]) {
+              const trial = Object.assign({}, best);
+              trial.pts = best.pts.map((p, i) => ({
+                x: p.x + dir * dx * mode.w[i],
+                y: p.y + dir * dy * mode.w[i]
+              }));
+              if (!latticePlausible(trial)) continue;
+              const score = evaluateLattice(lum, trial, level, null);
+              if (score > best.score) {
+                trial.score = score;
+                best = trial;
+                improved = true;
+              }
+            }
+          }
+          if (!improved) break;
+        }
+        step /= 2;
+      }
+      return best;
+    }
+
+    // The drawn quad gives a homography from the unit square to the image, which is
+    // used to lay out candidate lattices: a block grid on a flat surface is projective
+    // too, so sliding and stretching within that frame enumerates sensible starting
+    // guesses. The homography stays valid outside the unit square, which is what lets a
+    // candidate hang off the edges of the selection. From there each candidate is
+    // refined on its own corners, since the drawn frame is only approximately right.
+    //
+    // Always solved in the homography frame regardless of state.gridMode: the bilinear
+    // map has no meaningful extension past its corners.
+    function solvePlacementPass(framePoints, anchor) {
+      const frame = computeHomography(framePoints);
+      if (!frame) return null;
+      const lum = getImageLuminance();
+      const corners = [[0, 0], [1, 0], [1, 1], [0, 1]];
+
+      // Coarse pass, on the most averaged level: the lattice offset swept over half a
+      // period each way, at three cell sizes spanning the tolerance. A whole-period
+      // shift is deliberately not searched - that lattice sits on blocks the selection
+      // does not cover - so the cost is that the box has to be drawn within half a block
+      // of right. The three sizes keep the worst-case size error inside this level's
+      // basin; one nominal size is not enough, and a box drawn 20% too big is ordinary.
+      const COARSE_STEPS = 11;
+      const COARSE_SCALES = [1 - PLACEMENT_SCALE_TOL * 0.6, 1, 1 + PLACEMENT_SCALE_TOL * 0.6];
+      const COARSE_KEEP = 12;
+      const candidates = [];
+      const ref = latticeAxes(corners.map(([a, b]) => transformHomography(frame, a, b)));
+      if (!ref) return null;
+
+      for (const nu of [1, 2]) {
+        for (const nv of [1, 2]) {
+          const seeds = [];
+
+          for (const fu of COARSE_SCALES) {
+            for (const fv of COARSE_SCALES) {
+              for (let i = 0; i < COARSE_STEPS; i++) {
+                for (let j = 0; j < COARSE_STEPS; j++) {
+                  const du = (i / (COARSE_STEPS - 1) - 0.5) * (fu / nu);
+                  const dv = (j / (COARSE_STEPS - 1) - 0.5) * (fv / nv);
+                  const lat = {
+                    nu, nv,
+                    refCellU: ref.ul / nu, refCellV: ref.vl / nv,
+                    refCx: anchor.x, refCy: anchor.y,
+                    pts: corners.map(([a, b]) =>
+                      transformHomography(frame, du + a * fu, dv + b * fv))
+                  };
+                  if (!latticePlausible(lat)) continue;
+                  lat.score = evaluateLattice(lum, lat, 0, null);
+                  if (lat.score > 0) seeds.push(lat);
+                }
+              }
+            }
+          }
+
+          // Kept per arrangement, not globally. A 16-value comparison throws up
+          // spurious 0.6s readily, and one noisy arrangement would otherwise fill the
+          // shortlist and starve the others.
+          seeds.sort((a, b) => b.score - a.score);
+          candidates.push(...seeds.slice(0, COARSE_KEEP));
+        }
+      }
+      if (!candidates.length) return null;
+
+      // Down the ladder, pruning as it goes. A level's score shortlists but does not
+      // decide - it has averaged away the detail needed for that - so several survivors
+      // are carried to the next level and only the full-resolution fit picks a winner.
+      // Pruning is what makes the widest search affordable at the cheapest level, which
+      // is where it is needed: that is the level whose basin is wide enough to reach a
+      // sloppily drawn selection in the first place.
+      const LADDER_KEEP = [12, 6];
+      const STEP_FRACTION = [1 / 8, 1 / 16, 1 / 32];
+      let pool = candidates;
+      for (let level = 0; level < PLACEMENT_LEVELS.length; level++) {
+        pool = pool.map(lat => refineLattice(lum, lat, level, STEP_FRACTION[level], 5));
+        pool.sort((a, b) => placementRank(b) - placementRank(a));
+        if (level < LADDER_KEEP.length) pool = pool.slice(0, LADDER_KEEP[level]);
+      }
+
+      return pool[0] || null;
+    }
+
+    // A pass corrects position and size well, but can still be left short by shape: the
+    // four corners of a hand-drawn selection are each wrong by a different amount, and
+    // that error can start outside even the coarsest level's basin, where there is no
+    // slope to follow. Re-running from what the previous pass found fixes it, because
+    // that frame already has close to the right shape. The drift limit stays pinned to
+    // the selection the user actually drew so the lattice cannot walk a block per pass.
+    function solvePlacement(quad) {
+      if (!state.image || !quad || !quad.points || quad.points.length !== 4) return null;
+
+      const anchor = latticeCentre(quad.points);
+      let best = solvePlacementPass(quad.points, anchor);
+      if (!best) return null;
+
+      for (let pass = 1; pass < 3 && best.score < 0.999; pass++) {
+        const next = solvePlacementPass(best.pts, anchor);
+        if (!next || next.score <= best.score + 1e-4) break;
+        best = next;
+      }
+
+      if (best.score < PLACEMENT_MIN_SCORE) return null;
+
+      const cells = [];
+      if (evaluateLattice(getImageLuminance(), best, PLACEMENT_LEVELS.length - 1, cells) < 0) {
+        return null;
+      }
+      return { lattice: best, cells };
+    }
+
+    // Replaces the rough selection with one quad per detected block, each aligned to
+    // the solved lattice and analyzed like any other quad.
+    function applyPlacement(quad, solution) {
+      const { lattice, cells } = solution;
+      const groupId = `g${Date.now()}`;
+      const frame = JSON.parse(JSON.stringify(quad.points));
+      const corners = [[0, 0], [1, 0], [1, 1], [0, 1]];
+
+      const H = computeHomography(lattice.pts);
+      const su = 1 / lattice.nu, sv = 1 / lattice.nv;
+
+      const created = cells.map((cell, n) => {
+        const u0 = cell.iu * su;
+        const v0 = cell.iv * sv;
+        const pts = corners.map(([a, b]) => transformHomography(
+          H, u0 + a * su, v0 + b * sv));
+
+        const newQuad = {
+          // Date.now() alone collides here: every cell of a split is created inside the
+          // same millisecond.
+          id: Date.now() + n,
+          points: sortQuadPoints(pts),
+          placement: { groupId, iu: cell.iu, iv: cell.iv, corr: cell.corr, frame, lattice }
+        };
+        updateQuadAnalysis(newQuad);
+        return newQuad;
+      });
+
+      const idx = state.quads.findIndex(q => q.id === quad.id);
+      if (idx < 0) state.quads.push(...created);
+      else state.quads.splice(idx, 1, ...created);
+      return created;
+    }
+
+    // The split is destructive, so it has a way back: drop the whole group and put the
+    // original selection back where it was.
+    function undoPlacement(groupId) {
+      const idx = state.quads.findIndex(q => q.placement && q.placement.groupId === groupId);
+      if (idx < 0) return false;
+
+      const restored = {
+        id: Date.now(),
+        points: JSON.parse(JSON.stringify(state.quads[idx].placement.frame))
+      };
+      updateQuadAnalysis(restored);
+
+      state.quads = state.quads.filter(q => !(q.placement && q.placement.groupId === groupId));
+      state.quads.splice(Math.min(idx, state.quads.length), 0, restored);
+      return true;
+    }
+
     // --- Overlay North Arrow helper for thumbnails ---
     function drawNorthArrowOverlay(previewCanvasElem, angleDegrees) {
       const pCtx = previewCanvasElem.getContext('2d');
@@ -1405,6 +1910,13 @@
       menuOrientationBadge.textContent = analysis.bestOrientation;
       menuConfidenceBadge.textContent = `conf ${analysis.confidence}% \u00b7 facing ${analysis.facing}`;
 
+      menuUndoPlacement.style.display = quad.placement ? 'flex' : 'none';
+      if (quad.placement) {
+        const lat = quad.placement.lattice;
+        menuConfidenceBadge.textContent +=
+          ` \u00b7 ${lat.nu}\u00d7${lat.nv} fit ${Math.round(lat.score * 100)}%`;
+      }
+
       menuScoresGrid.innerHTML = analysis.scores.map(s => `
         <div class="score-item ${s.name === analysis.bestOrientation ? 'active' : ''}">
           <span>${s.code}:</span>
@@ -1429,6 +1941,44 @@
       globalContextMenu.classList.remove('active');
       globalContextMenu.style.display = 'none';
     }
+
+    menuPlacement.addEventListener('click', () => {
+      if (!state.contextQuadId) return;
+      const quad = state.quads.find(q => q.id === state.contextQuadId);
+      closeAllContextMenus();
+      if (!quad) return;
+
+      // The search runs for a few hundred milliseconds and blocks the page while it
+      // does, so hand the status line a frame to paint before starting.
+      updateStatus('Solving…');
+      setTimeout(() => {
+        const solution = solvePlacement(quad);
+        if (!solution) {
+          updateStatus('No lattice found');
+          return;
+        }
+
+        const created = applyPlacement(quad, solution);
+        const lat = solution.lattice;
+        updateStatus(`${lat.nu}×${lat.nv} blocks · fit ${Math.round(lat.score * 100)}%`);
+        state.contextQuadId = created.length ? created[0].id : null;
+        saveStateToStorage();
+        requestAnimationFrame(render);
+      }, 0);
+    });
+
+    menuUndoPlacement.addEventListener('click', () => {
+      if (!state.contextQuadId) return;
+      const quad = state.quads.find(q => q.id === state.contextQuadId);
+      closeAllContextMenus();
+      if (!quad || !quad.placement) return;
+
+      undoPlacement(quad.placement.groupId);
+      state.contextQuadId = null;
+      updateStatus('Placement undone');
+      saveStateToStorage();
+      requestAnimationFrame(render);
+    });
 
     menuDownload.addEventListener('click', () => {
       if (!state.contextQuadId) return;
@@ -1486,6 +2036,7 @@
       ctx.drawImage(state.image, 0, 0);
 
       // 2. Draw Quadrilaterals
+      drawPlacementLattices();
       state.quads.forEach((quad) => {
         drawQuadrilateralAndGrid(quad, ACCENT, 0.9);
       });
@@ -1549,6 +2100,56 @@
 
         const previewPts = sortQuadPoints(offsetPts);
         drawQuadrilateralAndGrid({ points: previewPts }, 'rgba(255, 255, 255, 0.8)', 0.9);
+      }
+
+      ctx.restore();
+    }
+
+    // The solved block grid, drawn once per split rather than once per quad.
+    function drawPlacementLattices() {
+      const drawn = new Set();
+      state.quads.forEach(quad => {
+        if (!quad.placement || drawn.has(quad.placement.groupId)) return;
+        drawn.add(quad.placement.groupId);
+        drawPlacementLattice(quad.placement);
+      });
+    }
+
+    // The detected block edges plus one block of grid on every side, so the lattice can
+    // be checked against blocks the selection never covered.
+    function drawPlacementLattice(placement) {
+      const H = computeHomography(placement.lattice.pts);
+      if (!H) return;
+      const { nu, nv } = placement.lattice;
+      const su = 1 / nu, sv = 1 / nv;
+      const du = 0, dv = 0;
+
+      ctx.save();
+
+      // A homography maps a straight line to a straight line, so two endpoints are
+      // enough per lattice line however far it is extended.
+      const line = (u1, v1, u2, v2) => {
+        const a = transformHomography(H, u1, v1);
+        const b = transformHomography(H, u2, v2);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      };
+
+      // Context ring first, faint and dashed; the detected edges go over it solid.
+      for (const ring of [true, false]) {
+        const iLo = ring ? -1 : 0, iHi = ring ? nu + 1 : nu;
+        const jLo = ring ? -1 : 0, jHi = ring ? nv + 1 : nv;
+        const uLo = du + iLo * su, uHi = du + iHi * su;
+        const vLo = dv + jLo * sv, vHi = dv + jHi * sv;
+
+        ctx.strokeStyle = ring ? 'rgba(255, 255, 255, 0.35)' : ACCENT;
+        ctx.lineWidth = (ring ? 1 : 2) / state.scale;
+        ctx.setLineDash(ring ? [4 / state.scale, 4 / state.scale] : []);
+
+        for (let i = iLo; i <= iHi; i++) line(du + i * su, vLo, du + i * su, vHi);
+        for (let j = jLo; j <= jHi; j++) line(uLo, dv + j * sv, uHi, dv + j * sv);
       }
 
       ctx.restore();
@@ -1664,7 +2265,9 @@
       });
 
       // Overlay North Compass Arrow directly on the Canvas Overlay using Quadrilateral Local Geometry!
-      if (quad.analysisResult && quad.analysisResult.analysis) {
+      // Blocks from a placement solve show their edges instead; the facing is still
+      // computed and still in the right-click menu.
+      if (!quad.placement && quad.analysisResult && quad.analysisResult.analysis) {
         const angle = quad.analysisResult.analysis.angle;
         drawNorthArrowOnQuadCanvas(ctx, quadPts, angle);
 
